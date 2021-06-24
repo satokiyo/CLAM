@@ -16,8 +16,11 @@ from wsi_core.wsi_utils import savePatchIter_bag_hdf5, initialize_hdf5_bag, coor
 import itertools
 from wsi_core.util_classes import isInContourV1, isInContourV2, isInContourV3_Easy, isInContourV3_Hard, Contour_Checking_fn
 from utils.file_utils import load_pkl, save_pkl
-
+from wsi_core.preprocessing import create_tile_generator, get_20x_zoom_level, process_slide, process_tile_index, optical_density, keep_tile, process_tile, normalize_staining, flatten_sample_tuple, flatten_sample, get_labels_df, preprocess, save_df, add_row_indices, sample, rdd_2_df, save_rdd_2_jpeg, save_2_jpeg, save_nonlabelled_sample_2_jpeg, save_labelled_sample_2_jpeg, save_jpeg_help
 Image.MAX_IMAGE_PIXELS = 933120000
+
+import pdb
+
 
 class WholeSlideImage(object):
     def __init__(self, path):
@@ -27,13 +30,14 @@ class WholeSlideImage(object):
             path (str): fullpath to WSI file
         """
 
+        self.path = path
         self.name = ".".join(path.split("/")[-1].split('.')[:-1])
-        self.wsi = openslide.open_slide(path)
+        self.wsi = openslide.open_slide(path) # Open Whole-Slide Image
         self.level_downsamples = self._assertLevelDownsamples()
         self.level_dim = self.wsi.level_dimensions
     
         self.contours_tissue = None
-        self.contours_tumor = None
+#        self.contours_tumor = None
         self.hdf5_file = None
 
     def getOpenSlide(self):
@@ -46,8 +50,157 @@ class WholeSlideImage(object):
 
         xmldoc = minidom.parse(xml_path)
         annotations = [anno.getElementsByTagName('Coordinate') for anno in xmldoc.getElementsByTagName('Annotation')]
-        self.contours_tumor  = [_createContour(coord_list) for coord_list in annotations]
-        self.contours_tumor = sorted(self.contours_tumor, key=cv2.contourArea, reverse=True)
+
+#        self.contours_tumor  = [_createContour(coord_list) for coord_list in annotations]
+#        self.contours_tumor = sorted(self.contours_tumor, key=cv2.contourArea, reverse=True)
+        self.contours_xml  = [_createContour(coord_list) for coord_list in annotations]
+        self.contours_xml = sorted(self.contours_xml, key=cv2.contourArea, reverse=True)
+
+        # TODO get hole contour
+        hole_contours = []
+
+        return self.contours_xml, hole_contours
+
+
+
+    def initXML2(self, path, seg_level=0): # 注意：mag_idx != level
+        ''' Parses the xml at the given path, assuming annotation format importable by ImageScope. '''
+
+        mag_idx = seg_level
+        # ndpi が保有しているスライド情報取得 (画像サイズ、オフセット、物理サイズ/pixel　等)###########
+        prp_mppx = float(self.wsi.properties.get('openslide.mpp-x') )
+        prp_mppy = float(self.wsi.properties.get('openslide.mpp-y') )
+        prp_offset_x = int(self.wsi.properties.get('hamamatsu.XOffsetFromSlideCentre'))
+        prp_offset_y = int(self.wsi.properties.get('hamamatsu.YOffsetFromSlideCentre'))
+        prp_hig = int(self.wsi.properties.get('openslide.level[' + str(mag_idx) + '].height'))
+        prp_wid = int(self.wsi.properties.get('openslide.level[' + str(mag_idx) + '].width'))
+        prp_downsample = int(self.wsi.properties.get('openslide.level[' + str(mag_idx) + '].downsample'))
+        
+        # 後で必要なのでmag_idxの値にかかわらず wid , hig の mag_idx 0 版を取得しておく
+        wid_mag0 = int(self.wsi.properties.get('openslide.level[0].width'))
+        hig_mag0 = int(self.wsi.properties.get('openslide.level[0].height'))
+        ###################################################################################
+
+        # メモリの関係上アノテーションオーバーレイ画像はHE読み込みmag_idxから更に下記数値分縮小した画像で作成する
+        draw_down_sampling_rate = 1
+    
+        def hex_to_rgb(value):
+            value = value.lstrip('#')
+            lv = len(value)
+            np_RGB = np.array( [int(value[ i:i + lv //3] , 16) for i in range(0,lv,lv//3)] )
+            #np_BGR = np.array( [ np_RGB[2] , np_RGB[1] , np_RGB[0] ] , dtype='uint8')
+            np_BGR =  tuple( [int(np_RGB[2]) , int(np_RGB[1]) , int(np_RGB[0]) ] )
+            return np_BGR
+    
+        def micrometer2pix_hamahoto( point , npp , offset , size_mag0 ):
+            
+            if(len(point ) != 2):
+               print("micrometer2pix_hamahoto : input error")
+               exit()
+            if(len(npp   ) != 2):
+               print("micrometer2pix_hamahoto : input error")
+               exit()
+            if(len(offset) != 2):
+               print("micrometer2pix_hamahoto : input error")
+               exit()
+            
+            x_nanometer  = point[0]
+            y_nanometer  = point[1]
+            x_npp        = npp[0]
+            y_npp        = npp[1]
+            x_offset     = offset[0]
+            y_offset     = offset[1]
+            wid_pix_mag0 = size_mag0[0]
+            hig_pix_mag0 = size_mag0[1]
+            
+            # オフセットは物理原点からみた画像中心の位置（単位:ナノメートル）である。
+            # このため画像原点（左上）からみた物理原点の位置（単位:ナノメートル）は
+            x_offset_from_imgLT = (wid_pix_mag0 / 2) * x_npp - x_offset
+            y_offset_from_imgLT = (hig_pix_mag0 / 2) * y_npp - y_offset
+            
+            # 上記を用いて画像原点（左上）からみた point の座標を取得
+            x_nanometer_from_pix0point = x_offset_from_imgLT + x_nanometer
+            y_nanometer_from_pix0point = y_offset_from_imgLT + y_nanometer
+            
+            # nm から ピクセルに変換
+            x_pix = x_nanometer_from_pix0point / x_npp
+            y_pix = y_nanometer_from_pix0point / y_npp
+            
+            return x_pix , y_pix
+    
+    
+        # xml 読み込み
+        tree = ET.parse(path)
+        root = tree.getroot()
+        
+        # 使用する囲み情報のリスト入れ物
+        anno_info_list_color = []
+        anno_info_list_point = []
+        anno_info_list_point_color_white = []
+        anno_info_list_ccode = []
+        anno_info_list_title = []
+        anno_info_ccode_class_idx = []
+
+        #囲み１つづつに対して処理していく
+        for child in root:
+        
+            # xmlから取得した囲い１つの情報取得
+            plist           = child.find("annotation").find("pointlist")
+            anno_color_code = child.find("annotation").attrib["color"]
+            #annotation      = ColorCode2annotation(anno_color_code)
+            annotation      = hex_to_rgb(anno_color_code)
+            print(anno_color_code)
+        
+            title = child.find("title").text
+            #print(title)
+        
+            xlist_pix = []
+            ylist_pix = []
+            for point in plist:
+        
+                point_x_micrometer = int(point.find("x").text)
+                point_y_micrometer = int(point.find("y").text)
+        
+                # ndpaはナノメータ単位の表示なのでmppをnpp(nanometer per pix)に変換する
+                prp_nppx = prp_mppx * 1000
+                prp_nppy = prp_mppy * 1000
+                # npp を pixelに変換する
+                point_x_pix , point_y_pix = micrometer2pix_hamahoto( (point_x_micrometer, point_y_micrometer) , (prp_nppx , prp_nppy) , (prp_offset_x , prp_offset_y) , (wid_mag0 , hig_mag0))
+        
+                point_x_pix_target_mag = int((point_x_pix / prp_downsample) / draw_down_sampling_rate)
+                point_y_pix_target_mag = int((point_y_pix / prp_downsample) / draw_down_sampling_rate)
+        
+        
+        
+                xlist_pix += [point_x_pix_target_mag]
+                ylist_pix += [point_y_pix_target_mag]
+        
+        
+            #xy_array = np.array([np.array([xlist_pix , ylist_pix]).T])
+            #xy_array = np.array([np.array([xlist_pix , ylist_pix])]).T
+            #xy_array = np.array([[xlist_pix , ylist_pix]])
+            xy_array = np.array([np.array([[x_pix , y_pix]]) for x_pix, y_pix in zip(xlist_pix, ylist_pix)])
+    
+            # 修正色の白の場合、点列だけ白用のリストに保存してスキップ。
+            if(anno_color_code == '#ffffff'):
+                anno_info_list_point_color_white.append(xy_array)
+                continue
+        
+            anno_info_list_color.append(annotation)
+            anno_info_list_ccode.append(anno_color_code)
+            anno_info_list_point.append(xy_array)
+            anno_info_list_title.append(title)
+
+        #self.contours_xml  = [_createContour(coord_list) for coord_list in annotations]
+        #self.contours_xml = sorted(self.contours_xml, key=cv2.contourArea, reverse=True)
+        self.contours_xml  = anno_info_list_point
+        self.contours_xml = sorted(self.contours_xml, key=cv2.contourArea, reverse=True)
+
+        hole_contours = [[] for i in range(len(self.contours_xml))] # dummy hole
+        self.contours_xml_white = anno_info_list_point_color_white
+
+        return self.contours_xml, hole_contours
+
 
     def initTxt(self,annot_path):
         def _create_contours_from_dict(annot):
@@ -72,15 +225,15 @@ class WholeSlideImage(object):
         with open(annot_path, "r") as f:
             annot = f.read()
             annot = eval(annot)
-        self.contours_tumor  = _create_contours_from_dict(annot)
-        self.contours_tumor = sorted(self.contours_tumor, key=cv2.contourArea, reverse=True)
+#        self.contours_tumor  = _create_contours_from_dict(annot)
+#        self.contours_tumor = sorted(self.contours_tumor, key=cv2.contourArea, reverse=True)
 
-    def initSegmentation(self, mask_file):
-        # load segmentation results from pickle file
-        import pickle
-        asset_dict = load_pkl(mask_file)
-        self.holes_tissue = asset_dict['holes']
-        self.contours_tissue = asset_dict['tissue']
+#    def initSegmentation(self, mask_file):
+#        # load segmentation results from pickle file
+#        import pickle
+#        asset_dict = load_pkl(mask_file)
+#        self.holes_tissue = asset_dict['holes']
+#        self.contours_tissue = asset_dict['tissue']
 
     def saveSegmentation(self, mask_file):
         # save segmentation results using pickle
@@ -142,32 +295,58 @@ class WholeSlideImage(object):
             return foreground_contours, hole_contours
         
         img = np.array(self.wsi.read_region((0,0), seg_level, self.level_dim[seg_level]))
-        img_hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)  # Convert to HSV space
-        img_med = cv2.medianBlur(img_hsv[:,:,1], mthresh)  # Apply median blurring
+        img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA)
+        img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)  # Convert to HSV space
+        #img_hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)  # Convert to HSV space
+#        img_med = cv2.medianBlur(img_hsv[:,:,1], mthresh)  # Apply median blurring # 中央値フィルタを入れると、肺胞壁の薄いところがつぶれてしまう
+        img_med = img_hsv[:,:,1]  # Apply median blurring
         
        
         # Thresholding
         if use_otsu:
-            _, img_otsu = cv2.threshold(img_med, 0, sthresh_up, cv2.THRESH_OTSU+cv2.THRESH_BINARY)
+            img_gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
+            img_med[img_gray[:,:]<65] = 0 # remove black 5> in gray pixels
+            thres, _ = cv2.threshold(img_med, 0, sthresh_up, cv2.THRESH_BINARY+cv2.THRESH_OTSU) # remove black 65> in gray pixels
+            img_bin = np.zeros((img_gray.shape), dtype=np.uint8)
+            img_bin[img_med >= thres] = 255
+#            _, img_bin = cv2.threshold(img_med, 0, sthresh_up, cv2.THRESH_OTSU+cv2.THRESH_BINARY)
+            print(f"th_otsu_sat : {thres}")
         else:
-            _, img_otsu = cv2.threshold(img_med, sthresh, sthresh_up, cv2.THRESH_BINARY)
+            _, img_bin = cv2.threshold(img_med, sthresh, sthresh_up, cv2.THRESH_BINARY)
 
         # Morphological closing
         if close > 0:
             kernel = np.ones((close, close), np.uint8)
-            img_otsu = cv2.morphologyEx(img_otsu, cv2.MORPH_CLOSE, kernel)                 
+            img_bin = cv2.morphologyEx(img_bin, cv2.MORPH_CLOSE, kernel)                 
+            cv2.imwrite("tmp.jpg", img_bin)
 
         scale = self.level_downsamples[seg_level]
         scaled_ref_patch_area = int(ref_patch_size**2 / (scale[0] * scale[1]))
         filter_params = filter_params.copy()
-        filter_params['a_t'] = filter_params['a_t'] * scaled_ref_patch_area
-        filter_params['a_h'] = filter_params['a_h'] * scaled_ref_patch_area
+        filter_params['a_t'] = filter_params['a_t'] * scaled_ref_patch_area # area filter threshold for tissue (positive integer, the minimum size of detected foreground contours to consider, relative to a reference patch size of 512 x 512 at level 0, e.g. a value 10 means only detected foreground contours of size greater than 10 512 x 512 sized patches at level 0 will be processed, default: 100)
+        filter_params['a_h'] = filter_params['a_h'] * scaled_ref_patch_area # area filter threshold for holes (positive integer, the minimum size of detected holes/cavities in foreground contours to avoid, once again relative to 512 x 512 sized patches at level 0, default: 16)
         
-        # Find and filter contours
-        contours, hierarchy = cv2.findContours(img_otsu, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE) # Find contours 
-        hierarchy = np.squeeze(hierarchy, axis=(0,))[:, 2:]
-        if filter_params: foreground_contours, hole_contours = _filter_contours(contours, hierarchy, filter_params)  # Necessary for filtering out artifacts
+        NDPA=1
+        CONTOUR=0
+        if NDPA:
+            #TODO
+            # ndpa as contour, white as hole.
+            def findContours_from_xml(xml_path, seg_level):
+                #self.initXML(xml_path) # xml for svs ?
+                return self.initXML2(xml_path, seg_level) # ndpa for ndpi
 
+            #xml_path = ".".join(self.path.split('.')[:-1]) + '.xml' # aperio
+            xml_path = self.path + '.ndpa' # hamahoto
+            contours,  hole_contours = findContours_from_xml(xml_path=xml_path, seg_level=seg_level) # Find contours 
+            foreground_contours = contours
+
+        elif CONTOUR: # segment tissue based on contour
+            # Find and filter contours
+            contours, hierarchy = cv2.findContours(img_bin, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE) # Find contours 
+            hierarchy = np.squeeze(hierarchy, axis=(0,))[:, 2:]
+            if filter_params:
+                foreground_contours, hole_contours = _filter_contours(contours, hierarchy, filter_params)  # Necessary for filtering out artifacts
+    
         self.contours_tissue = self.scaleContourDim(foreground_contours, scale)
         self.holes_tissue = self.scaleHolesDim(hole_contours, scale)
 
@@ -178,7 +357,7 @@ class WholeSlideImage(object):
             contour_ids = set(np.arange(len(self.contours_tissue))) - set(exclude_ids)
 
         self.contours_tissue = [self.contours_tissue[i] for i in contour_ids]
-        self.holes_tissue = [self.holes_tissue[i] for i in contour_ids]
+#        self.holes_tissue = [self.holes_tissue[i] for i in contour_ids]
 
     def visWSI(self, vis_level=0, color = (0,255,0), hole_color = (0,0,255), annot_color=(255,0,0), 
                     line_thickness=250, max_size=None, top_left=None, bot_right=None, custom_downsample=1, view_slide_only=False,
@@ -221,9 +400,9 @@ class WholeSlideImage(object):
                     cv2.drawContours(img, self.scaleContourDim(holes, scale), 
                                      -1, hole_color, line_thickness, lineType=cv2.LINE_8)
             
-            if self.contours_tumor is not None and annot_display:
-                cv2.drawContours(img, self.scaleContourDim(self.contours_tumor, scale), 
-                                 -1, annot_color, line_thickness, lineType=cv2.LINE_8, offset=offset)
+#            if self.contours_tumor is not None and annot_display:
+#                cv2.drawContours(img, self.scaleContourDim(self.contours_tumor, scale), 
+#                                 -1, annot_color, line_thickness, lineType=cv2.LINE_8, offset=offset)
         
         img = Image.fromarray(img)
     
