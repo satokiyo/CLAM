@@ -48,7 +48,7 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                   filter_params = {'a_t':100, 'a_h': 16, 'max_n_holes':8}, 
                   vis_params = {'vis_level': -1, 'line_thickness': 500},
                   patch_params = {'use_padding': True, 'contour_fn': 'four_pt'},
-                  patch_level = 0,
+                  patch_resolution = 40,
                   use_default_params = False, 
                   seg = False, save_mask = True, 
                   stitch= False, 
@@ -57,7 +57,7 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
 
 
     slides = sorted(os.listdir(source))
-    slides = [slide for slide in slides if os.path.isfile(os.path.join(source, slide))]
+    slides = [slide for slide in slides if os.path.isfile(os.path.join(source, slide)) and slide.split('.')[-1] in ['ndpi', 'svs']]
     if process_list is None:
         df = initialize_df(slides, seg_params, filter_params, vis_params, patch_params)
     
@@ -101,6 +101,16 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
         # Inialize WSI
         full_path = os.path.join(source, slide)
         WSI_object = WholeSlideImage(full_path)
+
+        # patch level(openslide mag_idx)の決定
+        obj_pow = int(WSI_object.objective_power)
+        if obj_pow < patch_resolution:
+            print("Desired patch resolution is higher than wsi's highest available resolution i.e. objective power")
+            print("skip slide ...")
+            continue
+        downscale = int(obj_pow / patch_resolution)
+        patch_level = WSI_object.getOpenSlide().get_best_level_for_downsample(downscale)
+        assert patch_level in [0, 1, 2, 3]
 
         if use_default_params:
             current_vis_params = vis_params.copy()
@@ -242,8 +252,8 @@ parser.add_argument('--save_dir', type = str,
                     help='directory to save processed data')
 parser.add_argument('--preset', default=None, type=str,
                     help='predefined profile of default segmentation and filter parameters (.csv)')
-parser.add_argument('--patch_level', type=int, default=0, 
-                    help='downsample level at which to patch')
+parser.add_argument('--patch_resolution', type=int, default=40, choices=[5, 10, 20, 40],
+                    help='equivalent objective power at which to patch')
 parser.add_argument('--process_list',  type = str, default=None,
                     help='name of list of images to process with parameters (.csv)')
 
@@ -280,7 +290,7 @@ if __name__ == '__main__':
                   'keep_ids': 'none', 'exclude_ids': 'none'}
     filter_params = {'a_t':100, 'a_h': 16, 'max_n_holes':8}
     vis_params = {'vis_level': -1, 'line_thickness': 250}
-    patch_params = {'use_padding': True, 'contour_fn': 'four_pt'}
+    patch_params = {'use_padding': True, 'contour_fn': 'four_pt'} # (choices between 'four_pt' - checks if one of four points need to be inside the contour, 'four_pt_hard' - checks if all four points need to be inside the contour, 'center' - checks if the center of the patch is inside the contour, 'basic' - checks if the top-left corner of the patch is inside the contour, default: 'four_pt')
 
     if args.preset:
         preset_df = pd.read_csv(os.path.join('presets', args.preset))
@@ -300,7 +310,7 @@ if __name__ == '__main__':
     filter_params["a_t"]=1
     filter_params["a_h"]=1
     filter_params["max_n_holes"]=2
-    #patch_params['contour_fn'] = 'center' # 'four_pt'
+    patch_params['contour_fn'] = 'five_pt' # 'four_pt' # 'four_pt_hard' 'center' 'basic'
 
     parameters = {'seg_params': seg_params,
                   'filter_params': filter_params,
@@ -313,5 +323,5 @@ if __name__ == '__main__':
                                             patch_size = args.patch_size, step_size=args.step_size, 
                                             seg = args.seg,  use_default_params=False, save_mask = True, 
                                             stitch= args.stitch,
-                                            patch_level=args.patch_level, patch = args.patch,
+                                            patch_resolution=args.patch_resolution, patch = args.patch,
                                             process_list = process_list, auto_skip=args.no_auto_skip)

@@ -9,15 +9,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import openslide
 from PIL import Image
-import pdb
 import h5py
 import math
 from wsi_core.wsi_utils import savePatchIter_bag_hdf5, initialize_hdf5_bag, coord_generator, save_hdf5, sample_indices, screen_coords, isBlackPatch, isWhitePatch, to_percentiles
 import itertools
-from wsi_core.util_classes import isInContourV1, isInContourV2, isInContourV3_Easy, isInContourV3_Hard, Contour_Checking_fn
+from wsi_core.util_classes import isInContourV1, isInContourV2, isInContourV3_Easy, isInContourV3_Hard, isInContourV3_Easy_5pt, Contour_Checking_fn
 from utils.file_utils import load_pkl, save_pkl
 from wsi_core.preprocessing import create_tile_generator, get_20x_zoom_level, process_slide, process_tile_index, optical_density, keep_tile, process_tile, normalize_staining, flatten_sample_tuple, flatten_sample, get_labels_df, preprocess, save_df, add_row_indices, sample, rdd_2_df, save_rdd_2_jpeg, save_2_jpeg, save_nonlabelled_sample_2_jpeg, save_labelled_sample_2_jpeg, save_jpeg_help
 Image.MAX_IMAGE_PIXELS = 933120000
+from pathlib import Path
 
 import pdb
 
@@ -35,7 +35,9 @@ class WholeSlideImage(object):
         self.wsi = openslide.open_slide(path) # Open Whole-Slide Image
         self.level_downsamples = self._assertLevelDownsamples()
         self.level_dim = self.wsi.level_dimensions
-    
+        self.vendor = self.wsi.properties.get('openslide.vendor')
+        self.objective_power = self.wsi.properties.get('openslide.objective-power')
+
         self.contours_tissue = None
 #        self.contours_tumor = None
         self.hdf5_file = None
@@ -246,54 +248,7 @@ class WholeSlideImage(object):
             Segment the tissue via HSV -> Median thresholding -> Binary threshold
         """
         
-        def _filter_contours(contours, hierarchy, filter_params):
-            """
-                Filter contours by: area.
-            """
-            filtered = []
-
-            # find indices of foreground contours (parent == -1)
-            hierarchy_1 = np.flatnonzero(hierarchy[:,1] == -1)
-            all_holes = []
-            
-            # loop through foreground contour indices
-            for cont_idx in hierarchy_1:
-                # actual contour
-                cont = contours[cont_idx]
-                # indices of holes contained in this contour (children of parent contour)
-                holes = np.flatnonzero(hierarchy[:, 1] == cont_idx)
-                # take contour area (includes holes)
-                a = cv2.contourArea(cont)
-                # calculate the contour area of each hole
-                hole_areas = [cv2.contourArea(contours[hole_idx]) for hole_idx in holes]
-                # actual area of foreground contour region
-                a = a - np.array(hole_areas).sum()
-                if a == 0: continue
-                if tuple((filter_params['a_t'],)) < tuple((a,)): 
-                    filtered.append(cont_idx)
-                    all_holes.append(holes)
-
-
-            foreground_contours = [contours[cont_idx] for cont_idx in filtered]
-            
-            hole_contours = []
-
-            for hole_ids in all_holes:
-                unfiltered_holes = [contours[idx] for idx in hole_ids ]
-                unfilered_holes = sorted(unfiltered_holes, key=cv2.contourArea, reverse=True)
-                # take max_n_holes largest holes by area
-                unfilered_holes = unfilered_holes[:filter_params['max_n_holes']]
-                filtered_holes = []
-                
-                # filter these holes
-                for hole in unfilered_holes:
-                    if cv2.contourArea(hole) > filter_params['a_h']:
-                        filtered_holes.append(hole)
-
-                hole_contours.append(filtered_holes)
-
-            return foreground_contours, hole_contours
-        
+       
         img = np.array(self.wsi.read_region((0,0), seg_level, self.level_dim[seg_level]))
         img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA)
         img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)  # Convert to HSV space
@@ -322,33 +277,83 @@ class WholeSlideImage(object):
 
         scale = self.level_downsamples[seg_level]
         scaled_ref_patch_area = int(ref_patch_size**2 / (scale[0] * scale[1]))
-        filter_params = filter_params.copy()
-        filter_params['a_t'] = filter_params['a_t'] * scaled_ref_patch_area # area filter threshold for tissue (positive integer, the minimum size of detected foreground contours to consider, relative to a reference patch size of 512 x 512 at level 0, e.g. a value 10 means only detected foreground contours of size greater than 10 512 x 512 sized patches at level 0 will be processed, default: 100)
-        filter_params['a_h'] = filter_params['a_h'] * scaled_ref_patch_area # area filter threshold for holes (positive integer, the minimum size of detected holes/cavities in foreground contours to avoid, once again relative to 512 x 512 sized patches at level 0, default: 16)
-        
-        NDPA=1
-        CONTOUR=0
-        if NDPA:
-            #TODO
+       
+        print(f"vendor : {self.vendor}")
+        if self.vendor == 'hamamatsu':
+            xml_path = self.path + '.ndpa'
+        elif self.vendor == 'aperio':
+            xml_path = ".".join(self.path.split('.')[:-1]) + '.xml' # aperio
+
+        if Path(xml_path).exists(): # segment tissue based on xml
             # ndpa as contour, white as hole.
             def findContours_from_xml(xml_path, seg_level):
                 #self.initXML(xml_path) # xml for svs ?
                 return self.initXML2(xml_path, seg_level) # ndpa for ndpi
 
-            #xml_path = ".".join(self.path.split('.')[:-1]) + '.xml' # aperio
-            xml_path = self.path + '.ndpa' # hamahoto
             contours,  hole_contours = findContours_from_xml(xml_path=xml_path, seg_level=seg_level) # Find contours 
             foreground_contours = contours
 
-        elif CONTOUR: # segment tissue based on contour
+        else: # segment tissue automatically
             # Find and filter contours
+            filter_params = filter_params.copy()
+            filter_params['a_t'] = filter_params['a_t'] * scaled_ref_patch_area # area filter threshold for tissue (positive integer, the minimum size of detected foreground contours to consider, relative to a reference patch size of 512 x 512 at level 0, e.g. a value 10 means only detected foreground contours of size greater than 10 512 x 512 sized patches at level 0 will be processed, default: 100)
+            filter_params['a_h'] = filter_params['a_h'] * scaled_ref_patch_area # area filter threshold for holes (positive integer, the minimum size of detected holes/cavities in foreground contours to avoid, once again relative to 512 x 512 sized patches at level 0, default: 16)
+ 
             contours, hierarchy = cv2.findContours(img_bin, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE) # Find contours 
             hierarchy = np.squeeze(hierarchy, axis=(0,))[:, 2:]
             if filter_params:
+                def _filter_contours(contours, hierarchy, filter_params):
+                    """
+                        Filter contours by: area.
+                    """
+                    filtered = []
+        
+                    # find indices of foreground contours (parent == -1)
+                    hierarchy_1 = np.flatnonzero(hierarchy[:,1] == -1)
+                    all_holes = []
+                    
+                    # loop through foreground contour indices
+                    for cont_idx in hierarchy_1:
+                        # actual contour
+                        cont = contours[cont_idx]
+                        # indices of holes contained in this contour (children of parent contour)
+                        holes = np.flatnonzero(hierarchy[:, 1] == cont_idx)
+                        # take contour area (includes holes)
+                        a = cv2.contourArea(cont)
+                        # calculate the contour area of each hole
+                        hole_areas = [cv2.contourArea(contours[hole_idx]) for hole_idx in holes]
+                        # actual area of foreground contour region
+                        a = a - np.array(hole_areas).sum()
+                        if a == 0: continue
+                        if tuple((filter_params['a_t'],)) < tuple((a,)): 
+                            filtered.append(cont_idx)
+                            all_holes.append(holes)
+        
+                    foreground_contours = [contours[cont_idx] for cont_idx in filtered]
+                    
+                    hole_contours = []
+        
+                    for hole_ids in all_holes:
+                        unfiltered_holes = [contours[idx] for idx in hole_ids ]
+                        unfilered_holes = sorted(unfiltered_holes, key=cv2.contourArea, reverse=True)
+                        # take max_n_holes largest holes by area
+                        unfilered_holes = unfilered_holes[:filter_params['max_n_holes']]
+                        filtered_holes = []
+                        
+                        # filter these holes
+                        for hole in unfilered_holes:
+                            if cv2.contourArea(hole) > filter_params['a_h']:
+                                filtered_holes.append(hole)
+        
+                        hole_contours.append(filtered_holes)
+        
+                    return foreground_contours, hole_contours
+ 
                 foreground_contours, hole_contours = _filter_contours(contours, hierarchy, filter_params)  # Necessary for filtering out artifacts
-    
-        self.contours_tissue = self.scaleContourDim(foreground_contours, scale)
-        self.holes_tissue = self.scaleHolesDim(hole_contours, scale)
+
+
+        self.contours_tissue = self.scaleContourDim(foreground_contours, scale) # scale coord value to level0
+        self.holes_tissue = self.scaleHolesDim(hole_contours, scale) # scale coord value to level0
 
         #exclude_ids = [0,7,9]
         if len(keep_ids) > 0:
@@ -472,6 +477,8 @@ class WholeSlideImage(object):
                 cont_check_fn = isInContourV2(contour=cont, patch_size=ref_patch_size[0])
             elif contour_fn == 'basic':
                 cont_check_fn = isInContourV1(contour=cont)
+            elif contour_fn == 'five_pt':
+                cont_check_fn = isInContourV3_Easy_5pt(contour=cont)
             else:
                 raise NotImplementedError
         else:
@@ -554,7 +561,7 @@ class WholeSlideImage(object):
         print("Total number of contours to process: ", n_contours)
         fp_chunk_size = math.ceil(n_contours * 0.05)
         init = True
-        for idx, cont in enumerate(self.contours_tissue):
+        for idx, cont in enumerate(self.contours_tissue): # coord at level0
             if (idx + 1) % fp_chunk_size == fp_chunk_size:
                 print('Processing contour {}/{}'.format(idx, n_contours))
             
@@ -576,13 +583,13 @@ class WholeSlideImage(object):
         patch_downsample = (int(self.level_downsamples[patch_level][0]), int(self.level_downsamples[patch_level][1]))
         ref_patch_size = (patch_size*patch_downsample[0], patch_size*patch_downsample[1])
         
-        img_w, img_h = self.level_dim[0]
+        img_w, img_h = self.level_dim[0] # image size at level0
         if use_padding:
             stop_y = start_y+h
             stop_x = start_x+w
         else:
-            stop_y = min(start_y+h, img_h-ref_patch_size[1]+1)
-            stop_x = min(start_x+w, img_w-ref_patch_size[0]+1)
+            stop_y = min(start_y+h, img_h-ref_patch_size[1]+1) # coord at level0
+            stop_x = min(start_x+w, img_w-ref_patch_size[0]+1) # coord at level0
         
         print("Bounding Box:", start_x, start_y, w, h)
         print("Contour Area:", cv2.contourArea(cont))
@@ -611,6 +618,8 @@ class WholeSlideImage(object):
                 cont_check_fn = isInContourV2(contour=cont, patch_size=ref_patch_size[0])
             elif contour_fn == 'basic':
                 cont_check_fn = isInContourV1(contour=cont)
+            elif contour_fn == 'five_pt':
+                cont_check_fn = isInContourV3_Easy_5pt(contour=cont, patch_size=ref_patch_size[0], center_shift=0.5)
             else:
                 raise NotImplementedError
         else:

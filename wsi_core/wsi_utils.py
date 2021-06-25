@@ -196,14 +196,13 @@ def DrawMapFromCoords(canvas, wsi_object, coords, patch_size, vis_level, indices
     patch_size = tuple(np.ceil((np.array(patch_size)/np.array(downsamples))).astype(np.int32))
     print('downscaled patch size: {}x{}'.format(patch_size[0], patch_size[1]))
     
-    for idx in range(total):
+    for patch_id in range(total):
         if verbose > 0:
-            if idx % ten_percent_chunk == 0:
-                print('progress: {}/{} stitched'.format(idx, total))
+            if patch_id % ten_percent_chunk == 0:
+                print('progress: {}/{} stitched'.format(patch_id, total))
         
-        patch_id = indices[idx]
-        coord = coords[patch_id]
-        patch = np.array(wsi_object.wsi.read_region(tuple(coord), vis_level, patch_size).convert("RGB"))
+        coord = coords[patch_id] # coord at level0
+        patch = np.array(wsi_object.wsi.read_region(tuple(coord), vis_level, patch_size).convert("RGB")) # coord is the location (x, y) tuple giving the top left pixel in the level 0 reference frame
         coord = np.ceil(coord / downsamples).astype(np.int32)
         canvas_crop_shape = canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3].shape[:2]
         canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3] = patch[:canvas_crop_shape[0], :canvas_crop_shape[1], :]
@@ -250,20 +249,20 @@ def StitchCoords(hdf5_file_path, wsi_object, downscale=16, draw_grid=False, bg_c
     file = h5py.File(hdf5_file_path, 'r')
     dset = file['coords']
     coords = dset[:]
-    w, h = wsi.level_dimensions[0]
+    w, h = wsi.level_dimensions[0] # image size at level0
 
     print('start stitching {}'.format(dset.attrs['name']))
     print('original size: {} x {}'.format(w, h))
 
-    w, h = wsi.level_dimensions[vis_level]
+    w, h = wsi.level_dimensions[vis_level] # image size at 'heatmap level' for stitching. (Not level0 nor patch level)
 
     print('downscaled size for stiching: {} x {}'.format(w, h))
     print('number of patches: {}'.format(len(coords)))
     
     patch_size = dset.attrs['patch_size']
     patch_level = dset.attrs['patch_level']
-    print('patch size: {}x{} patch level: {}'.format(patch_size, patch_size, patch_level))
-    patch_size = tuple((np.array((patch_size, patch_size)) * wsi.level_downsamples[patch_level]).astype(np.int32))
+    print('patch size: {}x{} patch level: {}'.format(patch_size, patch_size, patch_level)) # patch levelでのpatch size
+    patch_size = tuple((np.array((patch_size, patch_size)) * wsi.level_downsamples[patch_level]).astype(np.int32)) # level0でのpatch size
     print('ref patch size: {}x{}'.format(patch_size, patch_size))
 
     if w*h > Image.MAX_IMAGE_PIXELS: 

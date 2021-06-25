@@ -110,5 +110,25 @@ class isInContourV3_Hard(Contour_Checking_fn):
 		return 1
 
 
-
+class isInContourV3_Easy_5pt(Contour_Checking_fn):
+	def __init__(self, contour, patch_size, center_shift=0.5):
+		self.cont = contour
+		self.patch_size = patch_size
+		self.shift = int(patch_size//2*center_shift)
+	def __call__(self, pt): 
+		center = (pt[0]+self.patch_size//2, pt[1]+self.patch_size//2)
+		if self.shift > 0:
+			all_points = [(center[0]-self.shift, center[1]-self.shift),
+						  (center[0]+self.shift, center[1]+self.shift),
+						  (center[0]+self.shift, center[1]-self.shift),
+						  (center[0]-self.shift, center[1]+self.shift),
+						  center,
+						  ]
+		else:
+			all_points = [center]
 		
+		for points in all_points:
+			if cv2.pointPolygonTest(self.cont, points, False) >= 0:
+				return 1
+		return 0
+
