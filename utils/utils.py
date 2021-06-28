@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import torch.nn as nn
 import pdb
+import cv2
 
 import torch
 import numpy as np
@@ -163,4 +164,91 @@ def initialize_weights(module):
 		elif isinstance(m, nn.BatchNorm1d):
 			nn.init.constant_(m.weight, 1)
 			nn.init.constant_(m.bias, 0)
+
+
+
+def threshold(array, tau):
+    """
+    Threshold an array using either hard thresholding, Otsu thresholding or beta-fitting.
+
+    If the threshold value is fixed, this function returns
+    the mask and the threshold used to obtain the mask.
+    When using tau=-1, the threshold is obtained as described in the Otsu method.
+    When using tau=-2, it also returns the fitted 2-beta Mixture Model.
+
+
+    :param array: Array to threshold.
+    :param tau: (float) Threshold to use.
+                Values above tau become 1, and values below tau become 0.
+                If -1, use Otsu thresholding.
+		If -2, fit a mixture of 2 beta distributions, and use
+		the average of the two means.
+    :return: The tuple (mask, threshold).
+             If tau==-2, returns the tuple (mask, otsu_tau, ((rv1, rv2), (pi1, pi2))).
+             
+    """
+    if tau == -1:
+        # Otsu thresholding
+        minn, maxx = array.min(), array.max()
+        array_scaled = ((array - minn)/(maxx - minn)*255) \
+            .round().astype(np.uint8).squeeze()
+        tau, mask = cv2.threshold(array_scaled,
+                                  0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        tau = minn + (tau/255)*(maxx - minn)
+        # print(f'Otsu selected tau={tau_otsu}')
+    elif tau == -2:
+        array_flat = array.flatten()
+        ((a1, b1), (a2, b2)), (pi1, pi2), niter = bmm.estimate(array_flat, list(range(2)))
+        rv1 = scipy.stats.beta(a1, b1)
+        rv2 = scipy.stats.beta(a2, b2)
+        
+        tau = rv2.mean()
+        mask = cv2.inRange(array, tau, 1)
+
+        return mask, tau, ((rv1, pi1), (rv2, pi2))
+    else:
+        # Thresholding with a fixed threshold tau
+        mask = cv2.inRange(array, tau, 1)
+
+    return mask, tau
+
+
+def paint_circles(img, points, color='red', crosshair=False):
+    """
+    Paint points as circles on top of an image.
+
+    :param img: BGR image (numpy array).
+                Must be between 0 and 255.
+                First dimension must be color.
+    :param centroids: List of centroids in (y, x) format.
+    :param color: String of the color used to paint centroids.
+                  Default: 'red'.
+    :param crosshair: Paint crosshair instead of circle.
+                      Default: False.
+    :return: Image with painted circles centered on the points.
+             First dimension is be color.
+    """
+
+    if color == 'red':
+        #color = [255, 0, 0]
+        color = [0, 0, 255] # BGR
+    elif color == 'white':
+        color = [255, 255, 255]
+    else:
+        raise NotImplementedError(f'color {color} not implemented')
+
+    points = points.round().astype(np.uint16)
+
+    img = np.moveaxis(img, 0, 2).copy()
+    if not crosshair:
+        for y, x in points:
+            img = cv2.circle(img, (x, y), 3, color, -1)
+    else:
+        for y, x in points:
+            img = cv2.drawMarker(img,
+                                 (x, y),
+                                 color, cv2.MARKER_TILTED_CROSS, 7, 1, cv2.LINE_AA)
+    img = np.moveaxis(img, 2, 0)
+
+    return img
 

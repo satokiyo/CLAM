@@ -650,8 +650,8 @@ class WholeSlideImage(object):
         if len(results)>1:
             asset_dict = {'coords' :          results}
             
-            attr = {'patch_size' :            patch_size, # To be considered...
-                    'patch_level' :           patch_level,
+            attr = {'patch_size' :            patch_size, # patch_size. Not patch size in reference frame(level 0)
+                    'patch_level' :           patch_level, # patch_level. Not ref level(level 0)
                     'downsample':             self.level_downsamples[patch_level],
                     'downsampled_level_dim' : tuple(np.array(self.level_dim[patch_level])),
                     'level_dim':              self.level_dim[patch_level],
