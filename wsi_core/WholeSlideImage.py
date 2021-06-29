@@ -578,6 +578,14 @@ class WholeSlideImage(object):
 
     def process_contour(self, cont, contour_holes, patch_level, save_path, patch_size = 256, step_size = 256,
         contour_fn='four_pt', use_padding=True, top_left=None, bot_right=None):
+        '''
+        contour毎に対応するパッチを取る。
+        TODO
+        パッチのtopleftのxy tupleの集合をcontour毎に管理し、それをcontourに対するpatchのインデクスの代わりにする。
+        全てのcountourのxy tupleの和集合をとれば、全patchのsummaryを計算するとき用のpatchを取得できる。
+
+        '''
+        # 輪郭線のBBOX
         start_x, start_y, w, h = cv2.boundingRect(cont) if cont is not None else (0, 0, self.level_dim[patch_level][0], self.level_dim[patch_level][1])
 
         patch_downsample = (int(self.level_downsamples[patch_level][0]), int(self.level_downsamples[patch_level][1]))
@@ -633,6 +641,7 @@ class WholeSlideImage(object):
         x_range = np.arange(start_x, stop_x, step=step_size_x)
         y_range = np.arange(start_y, stop_y, step=step_size_y)
         x_coords, y_coords = np.meshgrid(x_range, y_range, indexing='ij')
+        # 切り出すpatchの候補
         coord_candidates = np.array([x_coords.flatten(), y_coords.flatten()]).transpose()
 
         num_workers = mp.cpu_count()
@@ -646,6 +655,9 @@ class WholeSlideImage(object):
         results = np.array([result for result in results if result is not None])
         
         print('Extracted {} coordinates'.format(len(results)))
+
+        # TODO
+        # 一つの輪郭線に対するpatch群を(x,y)のタプルとして取得しているので、その輪郭線にidをつけて参照できるようにしておく。len(contours)と同じ長さの配列とし、一つの要素は一つの輪郭線に対応するpatch群(x,y)タプル群としてもよい
 
         if len(results)>1:
             asset_dict = {'coords' :          results}

@@ -230,8 +230,8 @@ def paint_circles(img, points, color='red', crosshair=False):
     """
 
     if color == 'red':
-        #color = [255, 0, 0]
-        color = [0, 0, 255] # BGR
+        color = [255, 0, 0]
+        #color = [0, 0, 255] # BGR
     elif color == 'white':
         color = [255, 255, 255]
     else:
@@ -239,16 +239,17 @@ def paint_circles(img, points, color='red', crosshair=False):
 
     points = points.round().astype(np.uint16)
 
-    img = np.moveaxis(img, 0, 2).copy()
+    #img = np.moveaxis(img, 0, 2)
     if not crosshair:
         for y, x in points:
-            img = cv2.circle(img, (x, y), 3, color, -1)
+            img = cv2.circle(img.copy(), (x, y), 3, color, -1)
     else:
         for y, x in points:
-            img = cv2.drawMarker(img,
+            img = cv2.drawMarker(img.copy(),
                                  (x, y),
-                                 color, cv2.MARKER_TILTED_CROSS, 7, 1, cv2.LINE_AA)
-    img = np.moveaxis(img, 2, 0)
+                                 color, cv2.MARKER_TILTED_CROSS, markerSize=10)
+                                 #color, cv2.MARKER_TILTED_CROSS, 7, 1, cv2.LINE_AA)
+    #img = np.moveaxis(img, 2, 0)
 
     return img
 

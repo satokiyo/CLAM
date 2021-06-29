@@ -1,8 +1,8 @@
 python3 create_patches_fp.py \
---source /media/prostate/sample_ndpi/tmp  \
+--source /media/prostate/sample_ndpi/tmp/tmp  \
 --save_dir /media/prostate/20210331_PDL-1/CLAM/result   \
---patch_size 2048  \
---step_size 2048   \
+--patch_size 512  \
+--step_size 512   \
 --patch_resolution 20  \
 --seg  \
 --patch  \

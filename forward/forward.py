@@ -10,6 +10,9 @@ import h5py
 import math
 from torchvision import transforms
 import cv2
+from datasets.dataset_h5 import Whole_Slide_Bag_FP
+from pathlib import Path
+from wsi_core.wsi_utils import save_hdf5
 
 class Config():
     def __init__(self):
@@ -24,8 +27,8 @@ class Config():
         self.downsample_ratio: int = 1
         self.deep_supervision: int = 1
         self.use_ssl: int = 1
-        #self.pred_density_map_path: str = '/media/prostate/20210331_PDL-1/CLAM/result/nuclei_detection'
-        self.pred_density_map_path: str = ''
+        self.pred_density_map_path: str = '/media/prostate/20210331_PDL-1/CLAM/result/nuclei_detection'
+        #self.pred_density_map_path: str = ''
 
 class Transform():
     def __init__(self):
@@ -55,74 +58,28 @@ def forward_nuclei_detect(file_path, wsi_object, model_path): # forward using tr
     model.load_state_dict(torch.load(model_path, device))
     model.eval()
 
-    file = h5py.File(file_path, 'r')
-    dset = file['coords']
-    coords = dset[:]
+    dataset = Whole_Slide_Bag_FP(file_path, wsi_object.getOpenSlide(), pretrained=False, custom_transforms=False, custom_downsample=1, target_patch_size=-1)
+    total = len(dataset)
+    slide_id = dataset.slide_id
+    dataloader = torch.utils.data.DataLoader(dataset,
+                                               batch_size=1,
+                                               shuffle=False,
+                                               num_workers=4,
+                                               pin_memory=True if args.gpu==1 else False)
 
-    #if 'downsampled_level_dim' in dset.attrs.keys(): # patch level. Not level 0
-    #    w, h = dset.attrs['downsampled_level_dim'] # patch size at patch level. Not at level 0
-    #else:
-    #    w, h = dset.attrs['level_dim']
-    #print('original size: {} x {}'.format(w, h))
-
-    #w, h = wsi.level_dimensions[0] # image size at level0
-    #print('start stitching {}'.format(dset.attrs['name']))
-    #print('original size: {} x {}'.format(w, h))
-
-    #w, h = wsi.level_dimensions[vis_level] # image size at 'heatmap level' for stitching. (Not level0 nor patch level)
-    #print('downscaled size for stiching: {} x {}'.format(w, h))
-    
-    patch_size = dset.attrs['patch_size']
-    patch_level = dset.attrs['patch_level']
-    slide_id = dset.attrs['name']
-    print('patch size: {}x{} patch level: {}'.format(patch_size, patch_size, patch_level)) # patch levelでのpatch size
-    #patch_size = tuple((np.array((patch_size, patch_size)) * wsi.level_downsamples[patch_level]).astype(np.int32)) # level0でのpatch size
-    #print('ref patch size: {}x{}'.format(patch_size, patch_size))
-
-
-
-#    if w*h > Image.MAX_IMAGE_PIXELS: 
-#        raise Image.DecompressionBombError("Visualization Downscale %d is too large" % downscale)
-#    
-#    if alpha < 0 or alpha == -1:
-#        heatmap = Image.new(size=(w,h), mode="RGB", color=bg_color)
-#    else:
-#        heatmap = Image.new(size=(w,h), mode="RGBA", color=bg_color + (int(255 * alpha),))
-#    
-#    heatmap = np.array(heatmap)
-#    heatmap = DrawMap(heatmap, dset, coords, downscaled_shape, indices=None, draw_grid=draw_grid)
-
-    print('number of patches: {}'.format(len(coords)))
-    indices = np.arange(len(coords))
-    total = len(indices)
     verbose=1
     if verbose > 0:
         ten_percent_chunk = math.ceil(total * 0.1)
         
-#    patch_size = tuple(np.ceil((np.array(patch_size)/np.array(downsamples))).astype(np.int32)) # convert patch_size from level 0 to vis_level.
-#    print('downscaled patch size: {}x{}'.format(patch_size[0], patch_size[1]))
-    
-    results = []
-    for patch_id in range(total):
+    xy_locations = []
+    dab_intensity_map = []
+    tc_positive_indices = []
+    for patch_id, (patch, coord) in enumerate(dataloader):
         if verbose > 0:
             if patch_id % ten_percent_chunk == 0:
                 print('progress: {}/{} forward finished'.format(patch_id, total))
         
-        coord = coords[patch_id] # coord at level0
-        patch = np.array(wsi_object.wsi.read_region(tuple(coord), patch_level, (patch_size, patch_size)).convert("RGB")) # coord is the location (x, y) tuple giving the top left pixel in the level 0 reference frame
-#        coord = np.ceil(coord / downsamples).astype(np.int32) # convert coord for vis_level
-#        canvas_crop_shape = canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3].shape[:2]
-#        canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3] = patch[:canvas_crop_shape[0], :canvas_crop_shape[1], :]
-#        if draw_grid:
-#            DrawGrid(canvas, coord, patch_size)
-#
-#    return Image.fromarray(canvas)
-
-
-        inputs = transform(patch)
-        inputs = inputs.to(device)
-        inputs = torch.unsqueeze(inputs, 0) # add axis 0
-#        assert inputs.size(0) == 1, 'the batch size should equal to 1'
+        inputs = patch.to(device)
         with torch.set_grad_enabled(False):
             if args.deep_supervision:
                 outputs, intermediates = model(inputs)
@@ -132,9 +89,11 @@ def forward_nuclei_detect(file_path, wsi_object, model_path): # forward using tr
 
         print(f'estimated count {torch.sum(outputs).item()} cells')
 
-        if args.pred_density_map_path:
-            print("###################")
+        if args.pred_density_map_path: # save ROI overlay images
+            if not Path(args.pred_density_map_path).exists():
+                Path(args.pred_density_map_path).mkdir(parents=True)
             vis_img = outputs[0].detach().cpu().numpy()
+            del outputs
             # normalize density map values from 0 to 1, then map it to 0-255.
             vis_img = (vis_img - np.min(vis_img)) / np.ptp(vis_img)
             vis_img2 = vis_img.copy()
@@ -155,19 +114,67 @@ def forward_nuclei_detect(file_path, wsi_object, model_path): # forward using tr
                 vis_img = vis_img.resize(org_img.shape[:2])
             # overlay
             overlay = np.uint8((org_img/2) + np.uint8(vis_img/2)) # RGB
+            coord = coord[0].detach().cpu().numpy()
             cv2.imwrite(os.path.join(args.pred_density_map_path, str('_'.join([slide_id, str(coord[0]), str(coord[1])]) + '.jpg')), overlay.astype(np.uint8)[:,:,::-1])
      
             # detect/draw center point
             paint_center(args, overlay, vis_img2.transpose(1,2,0), taus=[-1], org_img=org_img, name=str('_'.join([slide_id, str(coord[0]), str(coord[1])]) + '.jpg'))
 
-        results.append(np.array(outputs[0]).transpose(1,2,0))
+        # TODO return (x,y) location arry, dab_intensity_map, tc_positive_indices for each patch
+        # TODO no need predition map
+        n_cells = 100
+        xy_locations.append(tuple((np.zeros(n_cells), np.zeros(n_cells))))
+        dab_intensity_map.append(np.zeros(dataset.patch_size, dataset.patch_size, 1))
+        tc_positive_indices.append(np.zeros(n_cells))
 
-    results = np.array([result for result in results if result is not None])
+    #results = np.array([result for result in results if result is not None])
+    xy_locations = np.array([result for result in xy_locations if result is not None])
+    dab_intensity_map = np.array([result for result in dab_intensity_map if result is not None])
+    tc_positive_indices = np.array([result for result in tc_positive_indices if result is not None])
+
+#    file = h5py.File(file_path, 'w')
+#    dset = file['coords']
+#    coords = dset[:]
+#    dset.attrs['nuclei_detection']['nuclei_coords'] = results # 1:n = roi coords : nuclei coords
+#    print('Extracted {} coordinates'.format(len(results)))
+
+#    save_path_hdf5 = os.path.join(save_path, str(self.name) + '.h5')
+            
+    if len(xy_locations)>1:
+        asset_dict = {'nuclei_detection' : xy_locations} # locations of detected center of nuclei
         
-    dset.attrs['nuclei_detection']['nuclei_coords'] = results # 1:n = roi coords : nuclei coords
-    print('Extracted {} coordinates'.format(len(results)))
-    import pdb;pdb.set_trace()
+        attr = {'patch_size'           : dataset.patch_size,  # patch_size. Not patch size in reference frame(level 0)
+                'patch_level'          : dataset.patch_level, # patch_level. Not ref level(level 0)
+                'intensity_thres'      : 175,                 # for BN method to detect DAB+ cell
+                'area_thres'           : 0.1,                 # over 10% area
+                'dab_intensity_map'    : dab_intensity_map,   # [0,255] heatmap for representing DAB intensity
+                'tc_positive_indices'  : tc_positive_indices, # TC(+)となる核位置のインデクス。核位置毎に1or0のフラグを与える。 # 閾値が変わったらdab_intensity_mapを元に再計算してアップデートする
+                #TODO contourごとに計算できるように、各contourに対応するpatchのインデクスを持たせ、assetからインデクシングして取得できるようにする。全体のsummaryの計算は全てのインデクスを使えばいい。
+                }
+                #'downsample':             self.level_downsamples[patch_level],
+                #'downsampled_level_dim' : tuple(np.array(self.level_dim[patch_level])),
+                #'level_dim':              self.level_dim[patch_level],
+                #'name':                   self.name,
+                #'save_path':              save_path}
 
+        attr_dict = { 'nuclei_detection' : attr}
+
+    else:
+        asset_dict, attr_dict = {}, {}
+
+
+    if len(asset_dict) > 0:
+        #TODO this overwrite "coords" asset. fix to save new asset additionally.
+        save_hdf5(file_path, asset_dict, attr_dict, mode='a')
+
+    return file_path
+
+
+
+
+
+
+#
 #    if len(results)>1:
 #        asset_dict = {'coords' :          results}
 #        
@@ -259,7 +266,6 @@ def paint_center(args, img, liklihoodmap, taus=[-1], org_img=None, name=None):
                                                color='red',
                                                crosshair=True)
         # Save to disk
-        #cv2.imwrite(os.path.join(args.pred_density_map_path, str(name[0]) + f'painted_on_estmap_tau_{round(tau, 4)}.jpg'), img_with_x_n_map.transpose(1,2,0)[:,:,::-1])
         cv2.imwrite(os.path.join(args.pred_density_map_path, str(name) + f'painted_on_estmap_tau_{round(tau, 4)}.jpg'), img_with_x_n_map[:,:,::-1])
 
         # voronoi
@@ -275,7 +281,6 @@ def paint_center(args, img, liklihoodmap, taus=[-1], org_img=None, name=None):
         R = org_img_copy[:,:,0] # R-ch
         G = org_img_copy[:,:,1] # G-ch
         B = org_img_copy[:,:,2] # B-ch
-        #e=1e-6
         BN = 255*np.divide(B, (B+G+R), out=np.zeros_like(B), where=(B+G+R)!=0) # ref.paper : Automated Selection of DAB-labeled Tissue for Immunohistochemical Quantification
         DAB = 255 - BN
         #cv2.imwrite(os.path.join(args.pred_density_map_path, str(name[0]) + f'BN{round(tau, 4)}.jpg'), BN)

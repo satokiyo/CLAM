@@ -122,6 +122,7 @@ class Whole_Slide_Bag_FP(Dataset):
 			dset = f['coords']
 			self.patch_level = f['coords'].attrs['patch_level']
 			self.patch_size = f['coords'].attrs['patch_size']
+			self.slide_id = f['coords'].attrs['name']
 			self.length = len(dset)
 			if target_patch_size > 0:
 				self.target_patch_size = (target_patch_size, ) * 2
@@ -152,7 +153,7 @@ class Whole_Slide_Bag_FP(Dataset):
 
 		if self.target_patch_size is not None:
 			img = img.resize(self.target_patch_size)
-		img = self.roi_transforms(img).unsqueeze(0)
+		img = self.roi_transforms(img)#.unsqueeze(0)
 		return img, coord
 
 class Dataset_All_Bags(Dataset):

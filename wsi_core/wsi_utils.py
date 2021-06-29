@@ -324,7 +324,7 @@ def StitchCoords(hdf5_file_path, wsi_object, downscale=16, draw_grid=False, bg_c
     file.close()
     return heatmap
 
-def StitchPoints(file_path, wsi_object, downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=None):
+def StitchPoints(hdf5_file_path, wsi_object, downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=None):
     '''
 
     Args:
@@ -333,12 +333,13 @@ def StitchPoints(file_path, wsi_object, downscale, bg_color=(0,0,0), alpha=-1, d
 
     '''
     if not heatmap:
-        heatmap = StitchCoords(file_path, wsi_object, downscale=downscale, bg_color=bg_color, alpha=alpha, draw_grid=draw_grid)
+        heatmap = StitchCoords(hdf5_file_path, wsi_object, downscale=downscale, bg_color=bg_color, alpha=alpha, draw_grid=draw_grid)
 
     # stich nuclei points
     wsi = wsi_object.getOpenSlide()
     vis_level = wsi.get_best_level_for_downsample(downscale)
     file = h5py.File(hdf5_file_path, 'r')
+    import pdb;pdb.set_trace()
     dset = file['coords']
     coords = dset[:]
     nuclei_coords = dset.attrs['nuclei_detection']['nuclei_coords'] # 1:n = roi coords : nuclei coords
