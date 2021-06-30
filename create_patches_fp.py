@@ -12,16 +12,17 @@ import pandas as pd
 
 def stitching(file_path, wsi_object, downscale = 64):
     start = time.time()
-    heatmap = StitchCoords(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False)
+    heatmap = StitchCoords(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True)
     total_time = time.time() - start
     
     return heatmap, total_time
 
 def nuclei_detect(file_path, wsi_object, model_path, heatmap=None, downscale=64):
     start = time.time()
-    from forward.forward import forward_nuclei_detect
+    from forward.forward import forward_nuclei_detect, detect_tc_positive_nuclei
     file_path = forward_nuclei_detect(file_path, wsi_object, model_path=model_path) # forward using trained model and save info to .h5 file.
-    heatmap = StitchPoints(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap)
+    file_path = detect_tc_positive_nuclei(file_path, wsi_object) 
+    heatmap = StitchPoints(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
     total_time = time.time() - start
     
     return heatmap, total_time
@@ -238,6 +239,13 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                 stitch_path = os.path.join(stitch_save_dir, slide_id+'.jpg')
                 heatmap.save(stitch_path)
 
+        # tmp
+        import PIL.Image as Image
+        mat = Image.new("L", mask.size, 128)
+        im = Image.composite(mask, heatmap, mat)
+        # im = Image.blend(im1, im2, 0.5)
+        im.save("/media/prostate/20210331_PDL1/CLAM/result/tmp_merged.jpg")
+
         # forward nuclei detection model.
         #TODO
         # respective to file["coords"]
@@ -341,7 +349,7 @@ if __name__ == '__main__':
     seg_params = {'seg_level': -1, 'sthresh': 8, 'mthresh': 7, 'close': 4, 'use_otsu': False,
                   'keep_ids': 'none', 'exclude_ids': 'none'}
     filter_params = {'a_t':100, 'a_h': 16, 'max_n_holes':8}
-    vis_params = {'vis_level': -1, 'line_thickness': 250}
+    vis_params = {'vis_level': -1, 'line_thickness': 250, 'number_contours': True}
     patch_params = {'use_padding': True, 'contour_fn': 'four_pt'} # (choices between 'four_pt' - checks if one of four points need to be inside the contour, 'four_pt_hard' - checks if all four points need to be inside the contour, 'center' - checks if the center of the patch is inside the contour, 'basic' - checks if the top-left corner of the patch is inside the contour, default: 'four_pt')
 
     if args.preset:

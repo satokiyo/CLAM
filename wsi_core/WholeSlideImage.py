@@ -364,9 +364,9 @@ class WholeSlideImage(object):
         self.contours_tissue = [self.contours_tissue[i] for i in contour_ids]
 #        self.holes_tissue = [self.holes_tissue[i] for i in contour_ids]
 
-    def visWSI(self, vis_level=0, color = (0,255,0), hole_color = (0,0,255), annot_color=(255,0,0), 
+    def visWSI(self, vis_level=0, color = (0,255,0), hole_color = (0,0,255),
                     line_thickness=250, max_size=None, top_left=None, bot_right=None, custom_downsample=1, view_slide_only=False,
-                    number_contours=False, seg_display=True, annot_display=True):
+                    number_contours=False, seg_display=True):
         
         downsample = self.level_downsamples[vis_level]
         scale = [1/downsample[0], 1/downsample[1]]
@@ -405,10 +405,6 @@ class WholeSlideImage(object):
                     cv2.drawContours(img, self.scaleContourDim(holes, scale), 
                                      -1, hole_color, line_thickness, lineType=cv2.LINE_8)
             
-#            if self.contours_tumor is not None and annot_display:
-#                cv2.drawContours(img, self.scaleContourDim(self.contours_tumor, scale), 
-#                                 -1, annot_color, line_thickness, lineType=cv2.LINE_8, offset=offset)
-        
         img = Image.fromarray(img)
     
         w, h = img.size
@@ -554,6 +550,15 @@ class WholeSlideImage(object):
         return level_downsamples
 
     def process_contours(self, save_path, patch_level=0, patch_size=256, step_size=256, **kwargs):
+        '''
+        wsi中の全てのcontoursに対して処理をする
+        'coords'datasetに各contour idに対応するパッチ領域の座標リストを保持する
+        パッチ領域の座標リストがどのcontourに属するものかを参照出来るように、各contour idのパッチ領域の座標リストのインデクスを'cont_idx'datasetに保持する
+        (Exp)
+        cont_id = 2
+        idx = dataset['cont_idx'][cont_id]
+        cont_2_coords = dataset['coords'][idx]
+        '''
         save_path_hdf5 = os.path.join(save_path, str(self.name) + '.h5')
         print("Creating patches for: ", self.name, "...",)
         elapsed = time.time()
@@ -561,6 +566,7 @@ class WholeSlideImage(object):
         print("Total number of contours to process: ", n_contours)
         fp_chunk_size = math.ceil(n_contours * 0.05)
         init = True
+        cont_idx_start = 0
         for idx, cont in enumerate(self.contours_tissue): # coord at level0
             if (idx + 1) % fp_chunk_size == fp_chunk_size:
                 print('Processing contour {}/{}'.format(idx, n_contours))
@@ -572,6 +578,12 @@ class WholeSlideImage(object):
                     init = False
                 else:
                     save_hdf5(save_path_hdf5, asset_dict, mode='a')
+            # cont_idxの保存
+            n_coords = len(asset_dict['coords'])
+            cont_idx_end = cont_idx_start + n_coords
+            asset_dict = {'cont_idx' : np.array([[cont_idx_start, cont_idx_end]])}
+            save_hdf5(save_path_hdf5, asset_dict, mode='a')
+            cont_idx_start = cont_idx_end
 
         return self.hdf5_file
 
@@ -579,7 +591,7 @@ class WholeSlideImage(object):
     def process_contour(self, cont, contour_holes, patch_level, save_path, patch_size = 256, step_size = 256,
         contour_fn='four_pt', use_padding=True, top_left=None, bot_right=None):
         '''
-        contour毎に対応するパッチを取る。
+        contour id毎に対応するパッチ領域を取得する
         TODO
         パッチのtopleftのxy tupleの集合をcontour毎に管理し、それをcontourに対するpatchのインデクスの代わりにする。
         全てのcountourのxy tupleの和集合をとれば、全patchのsummaryを計算するとき用のpatchを取得できる。

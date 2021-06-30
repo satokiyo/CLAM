@@ -157,8 +157,8 @@ def sample_rois(scores, coords, k=5, mode='range_sample', seed=1, score_start=0.
     asset = {'sampled_coords': coords, 'sampled_scores': scores}
     return asset
 
-def DrawGrid(img, coord, shape, thickness=2, color=(0,0,0,255)):
-    cv2.rectangle(img, tuple(np.maximum([0, 0], coord-thickness//2)), tuple(coord - thickness//2 + np.array(shape)), (0, 0, 0, 255), thickness=thickness)
+def DrawGrid(img, coord, shape, thickness=1, color=(0,0,0,128)):
+    cv2.rectangle(img, tuple(np.maximum([0, 0], coord-thickness//2)), tuple(coord - thickness//2 + np.array(shape)), color, thickness=thickness)
     return img
 
 def DrawMap(canvas, patch_dset, coords, patch_size, indices=None, verbose=1, draw_grid=True):
@@ -288,11 +288,12 @@ def StitchPatches(hdf5_file_path, downscale=16, draw_grid=False, bg_color=(0,0,0
     file.close()
     return heatmap
 
-def StitchCoords(hdf5_file_path, wsi_object, downscale=16, draw_grid=False, bg_color=(0,0,0), alpha=-1):
+def StitchCoords(hdf5_file_path, wsi_object, downscale=16, draw_grid=False, draw_contour=False, bg_color=(0,0,0), alpha=-1):
     wsi = wsi_object.getOpenSlide()
     vis_level = wsi.get_best_level_for_downsample(downscale)
     file = h5py.File(hdf5_file_path, 'r')
     dset = file['coords']
+    dset_cont_idx = file['cont_idx'][:]
     coords = dset[:]
     w, h = wsi.level_dimensions[0] # image size at level0
 
@@ -317,14 +318,51 @@ def StitchCoords(hdf5_file_path, wsi_object, downscale=16, draw_grid=False, bg_c
         heatmap = Image.new(size=(w,h), mode="RGB", color=bg_color)
     else:
         heatmap = Image.new(size=(w,h), mode="RGBA", color=bg_color + (int(255 * alpha),))
-    
+
     heatmap = np.array(heatmap)
-    heatmap = DrawMapFromCoords(heatmap, wsi_object, coords, patch_size, vis_level, indices=None, draw_grid=draw_grid)
-    
+
+    # contour毎に処理する
+    assert len(wsi_object.contours_tissue) == len(dset_cont_idx)
+    for contour_id, cont in enumerate(wsi_object.contours_tissue):
+        cont_idx = dset_cont_idx[contour_id]
+        DrawMapFromCoords(heatmap, wsi_object, coords[cont_idx[0] : cont_idx[1]], patch_size, vis_level, indices=None, draw_grid=draw_grid)
+
+        if draw_contour:
+            color = (0,255,0)
+            hole_color = (0,0,255)
+            line_thickness=2
+            number_contours = True
+            downsample = wsi_object.level_downsamples[vis_level] # image size at 'heatmap level' for stitching. (Not level0 nor patch level)
+            scale = [1/downsample[0], 1/downsample[1]]
+            top_left = (0,0)
+            offset = tuple(-(np.array(top_left) * scale).astype(int))
+
+            if not number_contours:
+#                cv2.drawContours(heatmap, wsi_object.scaleContourDim(wsi_object.contours_tissue, scale), 
+                cv2.drawContours(heatmap, wsi_object.scaleContourDim(cont, scale), 
+                                 -1, color, line_thickness, lineType=cv2.LINE_8, offset=offset)
+
+            else: # add numbering to each contour
+#                for idx, cont in enumerate(wsi_object.contours_tissue):
+                contour = np.array(wsi_object.scaleContourDim(cont, scale))
+                M = cv2.moments(contour)
+                cX = int(M["m10"] / (M["m00"] + 1e-9))
+                cY = int(M["m01"] / (M["m00"] + 1e-9))
+                # draw the contour and put text next to center
+                cv2.drawContours(heatmap,  [contour], -1, color, line_thickness, lineType=cv2.LINE_8, offset=offset)
+                cv2.putText(heatmap, "{}".format(contour_id), (cX, cY),
+                        cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 5)
+
+            for holes in wsi_object.holes_tissue:
+                cv2.drawContours(heatmap, wsi_object.scaleContourDim(holes, scale), 
+                                 -1, hole_color, line_thickness, lineType=cv2.LINE_8)
+
+    heatmap = Image.fromarray(heatmap)
+
     file.close()
     return heatmap
 
-def StitchPoints(hdf5_file_path, wsi_object, downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=None):
+def StitchPoints(hdf5_file_path, wsi_object, downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, draw_contour=False, heatmap=None):
     '''
 
     Args:
@@ -333,16 +371,20 @@ def StitchPoints(hdf5_file_path, wsi_object, downscale, bg_color=(0,0,0), alpha=
 
     '''
     if not heatmap:
-        heatmap = StitchCoords(hdf5_file_path, wsi_object, downscale=downscale, bg_color=bg_color, alpha=alpha, draw_grid=draw_grid)
+        heatmap = StitchCoords(hdf5_file_path, wsi_object, downscale=downscale, bg_color=bg_color, alpha=alpha, draw_grid=draw_grid, draw_contour=draw_contour)
 
     # stich nuclei points
     wsi = wsi_object.getOpenSlide()
     vis_level = wsi.get_best_level_for_downsample(downscale)
     file = h5py.File(hdf5_file_path, 'r')
-    import pdb;pdb.set_trace()
     dset = file['coords']
+    dset2 = file['nuclei_detection_loc'] # 1:n = roi coords : nuclei coords
+    dset3 = file['nuclei_detection_dab_intensity'] 
+    dset4 = file['nuclei_detection_tc_pos_indices'] 
+    dset_cont_idx = file['cont_idx'][:]
+    import pdb;pdb.set_trace()
+
     coords = dset[:]
-    nuclei_coords = dset.attrs['nuclei_detection']['nuclei_coords'] # 1:n = roi coords : nuclei coords
     w, h = wsi.level_dimensions[0] # image size at level0
 
     print('start stitching {}'.format(dset.attrs['name']))
@@ -371,7 +413,13 @@ def StitchPoints(hdf5_file_path, wsi_object, downscale, bg_color=(0,0,0), alpha=
 #    heatmap = np.array(heatmap)
 #    heatmap = DrawMapFromCoords(heatmap, wsi_object, coords, patch_size, vis_level, indices=None, draw_grid=draw_grid)
 
-    heatmap = DrawMapNucleiDetection(heatmap, wsi_object, coords, nuclei_coords, patch_size, vis_level, indices=None, draw_grid=draw_grid)
+
+    # contour毎に処理する
+    assert len(wsi_object.contours_tissue) == len(dset_cont_idx)
+    for contour_id, cont in enumerate(wsi_object.contours_tissue):
+        cont_idx = dset_cont_idx[contour_id]
+        #DrawMapFromCoords(heatmap, wsi_object, coords[cont_idx[0] : cont_idx[1]], patch_size, vis_level, indices=None, draw_grid=draw_grid)
+        heatmap = DrawMapNucleiDetection(heatmap, wsi_object, coords[cont_idx[0] : cont_idx[1]], nuclei_coords, patch_size, vis_level, indices=None, draw_grid=draw_grid)
     
     file.close()
     return heatmap

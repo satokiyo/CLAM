@@ -47,6 +47,7 @@ def initialize_df(slides, seg_params, filter_params, vis_params, patch_params,
 		# vis params
 		'vis_level': np.full((total), int(vis_params['vis_level']), dtype=np.int8),
 		'line_thickness': np.full((total), int(vis_params['line_thickness']), dtype=np.uint32),
+		'number_contours': True,
 
 		# patching params
 		'use_padding': np.full((total), bool(patch_params['use_padding']), dtype=bool),
