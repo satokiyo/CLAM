@@ -10,56 +10,56 @@ import argparse
 import pdb
 import pandas as pd
 
-def stitching(file_path, wsi_object, downscale = 64):
-    start = time.time()
-    heatmap = StitchCoords(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True)
-    total_time = time.time() - start
-    
-    return heatmap, total_time
-
-def nuclei_detect(file_path, wsi_object, model_path, heatmap=None, downscale=64):
-    start = time.time()
-    from forward.forward import forward_nuclei_detect, detect_tc_positive_nuclei
-    file_path = forward_nuclei_detect(file_path, wsi_object, model_path=model_path) # forward using trained model and save info to .h5 file.
-    file_path = detect_tc_positive_nuclei(file_path, wsi_object) 
-    heatmap = StitchPoints(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
-    total_time = time.time() - start
-    
-    return heatmap, total_time
-
-def segmentation(file_path, wsi_object, model_path, heatmap=None, downscale=64):
-    start = time.time()
-    from forward.forward import forward_segmentation
-    file_path = forward_segmentation(file_path, wsi_object, model_path=model_path) # forward using trained model and save info to .h5 file.
-    heatmap = StitchSegMap(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap)
-    total_time = time.time() - start
-    
-    return heatmap, total_time
-
-
-
-def segment(WSI_object, seg_params, filter_params):
-    ### Start Seg Timer
-    start_time = time.time()
-
-    # Segment
-    WSI_object.segmentTissue(**seg_params, filter_params=filter_params)
-
-    ### Stop Seg Timers
-    seg_time_elapsed = time.time() - start_time   
-    return WSI_object, seg_time_elapsed
-
-def patching(WSI_object, **kwargs):
-    ### Start Patch Timer
-    start_time = time.time()
-
-    # Patch
-    file_path = WSI_object.process_contours(**kwargs)
+#def stitching(file_path, wsi_object, downscale = 64):
+#    start = time.time()
+#    heatmap = StitchCoords(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True)
+#    total_time = time.time() - start
+#    
+#    return heatmap, total_time
+#
+#def nuclei_detect(file_path, wsi_object, model_path, heatmap=None, downscale=64):
+#    start = time.time()
+#    from forward.forward import forward_nuclei_detect, detect_tc_positive_nuclei
+#    file_path = forward_nuclei_detect(file_path, wsi_object, model_path=model_path) # forward using trained model and save info to .h5 file.
+#    file_path = detect_tc_positive_nuclei(file_path, wsi_object) 
+#    heatmap = StitchPoints(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
+#    total_time = time.time() - start
+#    
+#    return heatmap, total_time
+#
+#def segmentation(file_path, wsi_object, model_path, heatmap=None, downscale=64):
+#    start = time.time()
+#    from forward.forward import forward_segmentation
+#    file_path = forward_segmentation(file_path, wsi_object, model_path=model_path) # forward using trained model and save info to .h5 file.
+#    heatmap = StitchSegMap(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap)
+#    total_time = time.time() - start
+#    
+#    return heatmap, total_time
 
 
-    ### Stop Patch Timer
-    patch_time_elapsed = time.time() - start_time
-    return file_path, patch_time_elapsed
+
+#def segment(WSI_object, seg_params, filter_params):
+#    ### Start Seg Timer
+#    start_time = time.time()
+#
+#    # Segment
+#    WSI_object.segmentTissue(**seg_params, filter_params=filter_params)
+#
+#    ### Stop Seg Timers
+#    seg_time_elapsed = time.time() - start_time   
+#    return WSI_object, seg_time_elapsed
+
+#def patching(WSI_object, **kwargs):
+#    ### Start Patch Timer
+#    start_time = time.time()
+#
+#    # Patch
+#    file_path = WSI_object.process_contours(**kwargs)
+#
+#
+#    ### Stop Patch Timer
+#    patch_time_elapsed = time.time() - start_time
+#    return file_path, patch_time_elapsed
 
 
 def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_dir, 
@@ -69,12 +69,13 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                   filter_params = {'a_t':100, 'a_h': 16, 'max_n_holes':8}, 
                   vis_params = {'vis_level': -1, 'line_thickness': 500},
                   patch_params = {'use_padding': True, 'contour_fn': 'four_pt'},
-                  patch_resolution = 40,
+                  patch_resolution_detection = 40,
+                  patch_resolution_segmentation = 10,
                   use_default_params = False, 
                   seg = False, save_mask = True, 
                   stitch= False, 
                   patch = False, auto_skip=True, process_list = None,
-                  model_path_nuclei_detection='', model_path_segmentation=''):
+                  model_path_detection='', model_path_segmentation=''):
     
 
 
@@ -126,13 +127,16 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
 
         # patch level(openslide mag_idx)の決定
         obj_pow = int(WSI_object.objective_power)
-        if obj_pow < patch_resolution:
+        if (obj_pow < patch_resolution_detection) or (obj_pow < patch_resolution_segmentation):
             print("Desired patch resolution is higher than wsi's highest available resolution i.e. objective power")
             print("skip slide ...")
             continue
-        downscale = int(obj_pow / patch_resolution)
-        patch_level = WSI_object.getOpenSlide().get_best_level_for_downsample(downscale)
-        assert patch_level in [0, 1, 2, 3]
+        downscale_detection = int(obj_pow / patch_resolution_detection)
+        downscale_segmentation = int(obj_pow / patch_resolution_segmentation)
+        patch_level_detection = WSI_object.getOpenSlide().get_best_level_for_downsample(downscale_detection)
+        patch_level_segmentation = WSI_object.getOpenSlide().get_best_level_for_downsample(downscale_segmentation)
+        assert patch_level_detection in [0, 1, 2, 3]
+        assert patch_level_segmentation in [0, 1, 2, 3]
 
         if use_default_params:
             current_vis_params = vis_params.copy()
@@ -212,71 +216,107 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
         df.loc[idx, 'seg_level'] = current_seg_params['seg_level']
 
 
-        # start segment tissue and background 
+        # start segment tissue and background.
         seg_time_elapsed = -1
         if seg:
-            WSI_object, seg_time_elapsed = segment(WSI_object, current_seg_params, current_filter_params) 
+            start_time = time.time()
 
-        # save segmented tissue mask
+            # Segment
+            WSI_object.segmentTissue(**current_seg_params, filter_params=current_filter_params)
+
+            seg_time_elapsed = time.time() - start_time   
+
+        # save segmented tissue mask(contour line)
         if save_mask:
             mask = WSI_object.visWSI(**current_vis_params)
             mask_path = os.path.join(mask_save_dir, slide_id+'.jpg')
             mask.save(mask_path)
 
-        # save segmented tissue mask contours as .h5 file
+        # save patch coordinates of each contour as .h5 file
         patch_time_elapsed = -1 # Default time
         if patch:
-            current_patch_params.update({'patch_level': patch_level, 'patch_size': patch_size, 'step_size': step_size, 
-                                         'save_path': patch_save_dir})
-            file_path, patch_time_elapsed = patching(WSI_object = WSI_object,  **current_patch_params,)
-        
-        # save stitching heatmap 
+            start_time = time.time()
+
+            proc_dict = {"detection" : patch_level_detection, "segmentation" : patch_level_segmentation}
+            for key, patch_level in proc_dict.items():
+                current_patch_params.update({'patch_level': patch_level, 'patch_size': patch_size, 'step_size': step_size, 
+                                             'save_path': patch_save_dir})
+                # Patch and save in WSI_object.hdf5_file
+                WSI_object.process_contours(target=key, **current_patch_params)
+            
+            patch_time_elapsed = time.time() - start_time
+
+
+        # save stitching heatmap of patches
         stitch_time_elapsed = -1
         if stitch:
-            file_path = os.path.join(patch_save_dir, slide_id+'.h5')
+            #file_path = os.path.join(patch_save_dir, slide_id+'.h5')
+            file_path = WSI_object.hdf5_file
             if os.path.isfile(file_path):
-                heatmap, stitch_time_elapsed = stitching(file_path, WSI_object, downscale=64)
-                stitch_path = os.path.join(stitch_save_dir, slide_id+'.jpg')
-                heatmap.save(stitch_path)
+                start = time.time()
+                proc_dict = {"detection" : patch_level_detection, "segmentation" : patch_level_segmentation}
+                for key, patch_level in proc_dict.items():
+                    # Patch and save in WSI_object.hdf5_file
+ 
+                    # Stitch
+                    heatmap = StitchCoords(file_path, WSI_object, target=key, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True)
 
-        # tmp
-        import PIL.Image as Image
-        mat = Image.new("L", mask.size, 128)
-        im = Image.composite(mask, heatmap, mat)
-        # im = Image.blend(im1, im2, 0.5)
-        im.save("/media/prostate/20210331_PDL1/CLAM/result/tmp_merged.jpg")
+                    stitch_time_elapsed = time.time() - start
+                    for i, hm in enumerate(heatmap): 
+                        stitch_path = os.path.join(stitch_save_dir, slide_id+f'{key}_cont{i}.jpg')
+                        hm.save(stitch_path)
+                # TODO
+                # contour毎ではなく、全contourの集合に対してのstitchingを実行する
+                import pdb;pdb.set_trace()
 
-        # forward nuclei detection model.
+
+        # forward detection model.
         #TODO
-        # respective to file["coords"]
-        # save new attr file["coords"].attr["nuclei_detection"]["nuclei_coords"]
-        # save new attr file["coords"].attr["nuclei_detection"]["contours coords of each xy nuclei"]
-        # save new attr file["coords"].attr["nuclei_detection"]["binary flag of whether contour is TC+/- for each xy nuclei"]
-        # save new attr file["coords"].attr["nuclei_detection"]["heat map of BN image"]
-        # save new attr file["coords"].attr["nuclei_detection"]["threshold for TC+/-"]
-        nuclei_detection_time_elapsed = -1
-        nuclei_detection=True
-        if nuclei_detection:
+        detection_time_elapsed = -1
+        detection=True
+        if detection:
             file_path = os.path.join(patch_save_dir, slide_id+'.h5') # add new attr to patched .h5 file.
             if os.path.isfile(file_path):
-                heatmap, nuclei_detection_time_elapsed = nuclei_detect(file_path, WSI_object, model_path_nuclei_detection, heatmap)
-                nuclei_detect_path = os.path.join(stitch_save_dir, slide_id+'_nuclei_detect.jpg')
-                heatmap.save(nuclei_detect_path)
+                start = time.time()
+                from forward.forward import forward_detection, detect_tc_positive_nuclei
+
+                # detect
+                file_path = forward_detection(file_path, WSI_object, model_path=model_path_detection) # forward using trained model and save info to .h5 file.
+
+                # calc tc+
+                file_path = detect_tc_positive_nuclei(file_path, WSI_object) 
+
+                # Stitch
+                heatmap = StitchPoints(file_path, WSI_object, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
+
+                detect_path = os.path.join(stitch_save_dir, slide_id+'_detect.jpg')
+                heatmap.save(detect_path)
+                detection_time_elapsed = time.time() - start
+
                 
         segmentation_time_elapsed = -1
         segmentation=True
         if segmentation:
             file_path = os.path.join(patch_save_dir, slide_id+'.h5') # add new attr to patched .h5 file.
             if os.path.isfile(file_path):
-                heatmap, segmentation_time_elapsed = segmentation(file_path, WSI_object, model_path_segmentation, heatmap)
+                start = time.time()
+                from forward.forward import forward_segmentation
+
+                # segmentation
+                file_path = forward_segmentation(file_path, WSI_object, model_path=model_path_segmentation) # forward using trained model and save info to .h5 file.
+
+                # Stitch
+                heatmap = StitchSegMap(file_path, WSI_object, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
+
                 segmentation_path = os.path.join(stitch_save_dir, slide_id+'_segmentation.jpg')
                 heatmap.save(segmentation_path)
+                segmentation_time_elapsed = time.time() - start
 
 
         print("segmentation took {} seconds".format(seg_time_elapsed))
         print("patching took {} seconds".format(patch_time_elapsed))
         print("stitching took {} seconds".format(stitch_time_elapsed))
-        print("nuclei detection took {} seconds".format(nuclei_detection_time_elapsed))
+        print("detection took {} seconds".format(detection_time_elapsed))
         print("segmentation took {} seconds".format(segmentation_time_elapsed))
         df.loc[idx, 'status'] = 'processed'
 
@@ -295,6 +335,9 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
         
     return seg_times, patch_times
 
+
+
+
 parser = argparse.ArgumentParser(description='seg and patch')
 parser.add_argument('--source', type = str,
                     help='path to folder containing raw wsi image files')
@@ -310,12 +353,15 @@ parser.add_argument('--save_dir', type = str,
                     help='directory to save processed data')
 parser.add_argument('--preset', default=None, type=str,
                     help='predefined profile of default segmentation and filter parameters (.csv)')
-parser.add_argument('--patch_resolution', type=int, default=40, choices=[5, 10, 20, 40],
+parser.add_argument('--patch_resolution_detection', type=int, default=40, choices=[5, 10, 20, 40],
+                    help='equivalent objective power at which to patch')
+parser.add_argument('--patch_resolution_segmentation', type=int, default=10, choices=[5, 10, 20, 40],
                     help='equivalent objective power at which to patch')
 parser.add_argument('--process_list',  type = str, default=None,
                     help='name of list of images to process with parameters (.csv)')
-parser.add_argument('--ckpts_nuclei_detection', type=str, default='')
+parser.add_argument('--ckpts_detection', type=str, default='')
 parser.add_argument('--ckpts_segmentation', type=str, default='')
+
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -383,7 +429,9 @@ if __name__ == '__main__':
                                             patch_size = args.patch_size, step_size=args.step_size, 
                                             seg = args.seg,  use_default_params=False, save_mask = True, 
                                             stitch= args.stitch,
-                                            patch_resolution=args.patch_resolution, patch = args.patch,
+                                            patch_resolution_detection=args.patch_resolution_detection, 
+                                            patch_resolution_segmentation=args.patch_resolution_segmentation,
+                                            patch = args.patch,
                                             process_list = process_list, auto_skip=args.no_auto_skip,
-                                            model_path_nuclei_detection=args.ckpts_nuclei_detection,
+                                            model_path_detection=args.ckpts_detection,
                                             model_path_segmentation=args.ckpts_segmentation)

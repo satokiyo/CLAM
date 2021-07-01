@@ -43,7 +43,7 @@ class Transform():
         return self.trans(patch)
 
 
-def forward_nuclei_detect(file_path, wsi_object, model_path): # forward using trained model and save info to .h5 file.
+def forward_detection(file_path, wsi_object, model_path): # forward using trained model and save info to .h5 file.
     '''
     # TODO
     file_pathのHDF5ファイルの各パッチをイテレートし、nuclei detectionの結果が無かった場合だけforwardを実行し、該当のpatchのhdf5 groupに新たなdatasetを追加する

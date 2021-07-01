@@ -18,6 +18,7 @@ from utils.file_utils import load_pkl, save_pkl
 from wsi_core.preprocessing import create_tile_generator, get_20x_zoom_level, process_slide, process_tile_index, optical_density, keep_tile, process_tile, normalize_staining, flatten_sample_tuple, flatten_sample, get_labels_df, preprocess, save_df, add_row_indices, sample, rdd_2_df, save_rdd_2_jpeg, save_2_jpeg, save_nonlabelled_sample_2_jpeg, save_labelled_sample_2_jpeg, save_jpeg_help
 Image.MAX_IMAGE_PIXELS = 933120000
 from pathlib import Path
+from utils.file_utils import create_hdf5_group, create_hdf5_dataset, create_hdf5_attrs, open_hdf5_file
 
 import pdb
 
@@ -386,7 +387,7 @@ class WholeSlideImage(object):
             offset = tuple(-(np.array(top_left) * scale).astype(int))
             line_thickness = int(line_thickness * math.sqrt(scale[0] * scale[1]))
             if self.contours_tissue is not None and seg_display:
-                if not number_contours:
+                if not number_contours: # draw contour id 
                     cv2.drawContours(img, self.scaleContourDim(self.contours_tissue, scale), 
                                      -1, color, line_thickness, lineType=cv2.LINE_8, offset=offset)
 
@@ -549,43 +550,95 @@ class WholeSlideImage(object):
         
         return level_downsamples
 
-    def process_contours(self, save_path, patch_level=0, patch_size=256, step_size=256, **kwargs):
+    def process_contours(self, target, save_path, patch_level=0, patch_size=256, step_size=256, **kwargs):
         '''
         wsi中の全てのcontoursに対して処理をする
         'coords'datasetに各contour idに対応するパッチ領域の座標リストを保持する
         パッチ領域の座標リストがどのcontourに属するものかを参照出来るように、各contour idのパッチ領域の座標リストのインデクスを'cont_idx'datasetに保持する
-        (Exp)
+        (Ex)
         cont_id = 2
         idx = dataset['cont_idx'][cont_id]
         cont_2_coords = dataset['coords'][idx]
+
+        Args
+          target : 'detection' or 'segmentation'. make hdfs groups for each target and save. 
+
         '''
+        assert target in ['detection', 'segmentation']
         save_path_hdf5 = os.path.join(save_path, str(self.name) + '.h5')
         print("Creating patches for: ", self.name, "...",)
-        elapsed = time.time()
         n_contours = len(self.contours_tissue)
         print("Total number of contours to process: ", n_contours)
         fp_chunk_size = math.ceil(n_contours * 0.05)
-        init = True
-        cont_idx_start = 0
-        for idx, cont in enumerate(self.contours_tissue): # coord at level0
-            if (idx + 1) % fp_chunk_size == fp_chunk_size:
-                print('Processing contour {}/{}'.format(idx, n_contours))
-            
-            asset_dict, attr_dict = self.process_contour(cont, self.holes_tissue[idx], patch_level, save_path, patch_size, step_size, **kwargs)
-            if len(asset_dict) > 0:
-                if init:
-                    save_hdf5(save_path_hdf5, asset_dict, attr_dict, mode='w')
-                    init = False
-                else:
-                    save_hdf5(save_path_hdf5, asset_dict, mode='a')
-            # cont_idxの保存
-            n_coords = len(asset_dict['coords'])
-            cont_idx_end = cont_idx_start + n_coords
-            asset_dict = {'cont_idx' : np.array([[cont_idx_start, cont_idx_end]])}
-            save_hdf5(save_path_hdf5, asset_dict, mode='a')
-            cont_idx_start = cont_idx_end
 
-        return self.hdf5_file
+        # group作成
+        f = open_hdf5_file(save_path_hdf5, mode='a')
+
+        if 'contours' in f.keys():
+            grp = f['contours']
+        else:
+            grp = create_hdf5_group(f, 'contours')
+
+        create_hdf5_attrs(grp, name='name', data=self.name) # attrs at /contours
+
+        for idx_cont, cont in enumerate(self.contours_tissue): # contour coords at level0
+            #TODO contourを比較し、差分を確認し、新規追加または無くなったcontourについては該当groupの削除
+            grp_cont = create_hdf5_group(grp, f'contour{idx_cont}') # /countours/contourxx
+            create_hdf5_dataset(grp_cont, 'coords_contour', data=cont) # dataset at /contours/contourxx/coords_contour
+            grp_patches = create_hdf5_group(grp_cont, f'patches/{target}') # /contours/contourxx/patches/target(detection or segmentation)
+    
+            if (idx_cont + 1) % fp_chunk_size == fp_chunk_size:
+                print('Processing contour {}/{}'.format(idx_cont, n_contours))
+            asset_dict, attr_dict = self.process_contour(cont, self.holes_tissue[idx_cont], patch_level, save_path, patch_size, step_size, **kwargs)
+            # save attrs
+            if len(asset_dict) > 0:
+                # save attrs for patches
+                for key, val in attr_dict['coords'].items(): 
+                    create_hdf5_attrs(grp_patches, name=key, data=val) # attrs at /contours/contourxx/patches/target/
+                # save assets per patch
+                for idx_patch, coord in enumerate(asset_dict['coords']):
+                    grp_patch = create_hdf5_group(grp_patches, f'patch{idx_patch}') # /contours/contourxx/patches/target/patchxx
+                    create_hdf5_dataset(grp_patch, 'coord', data=coord) # dataset at /contours/contourxx/patches/target/patchxx/coord
+            else: # no patches for this cont
+                # TODO
+                pass
+    
+        debug=True
+        if debug:
+            def print_dataset(name, obj):
+                if isinstance(obj, h5py.Dataset):
+                    print(name)
+                    # print('\t',obj)
+            f.visititems(print_dataset)
+
+        f.close()
+    
+        self.hdf5_file = save_path_hdf5
+
+        # SAMPLE
+        # create 
+        #grp = f.create_group("/subgroup")
+        #grp.attrs.create(name="", data=)
+        #grp.attrs.get(name="")
+        #dset = f.create_dataset("mydataset", (100,), dtype='i')
+
+        ## ref
+        #ref = mygroup.ref
+        #mygroup2 = myfile[ref]
+        
+        ## region ref
+        #myds = myfile.create_dataset('dset', (200,200))
+        #regref = myds.regionref[0:10, 0:5]
+        
+        #subset = myds[regref]
+        
+        ## vlen value
+        #dt = h5py.vlen_dtype(np.dtype('int32'))
+        #dset = f.create_dataset('vlen_int', (100,), dtype=dt)
+        #dset[0] = [1,2,3]
+        #dset[1] = [1,2,3,4,5]
+        #dset[0]
+        #dset[0:2]
 
 
     def process_contour(self, cont, contour_holes, patch_level, save_path, patch_size = 256, step_size = 256,
@@ -668,9 +721,6 @@ class WholeSlideImage(object):
         
         print('Extracted {} coordinates'.format(len(results)))
 
-        # TODO
-        # 一つの輪郭線に対するpatch群を(x,y)のタプルとして取得しているので、その輪郭線にidをつけて参照できるようにしておく。len(contours)と同じ長さの配列とし、一つの要素は一つの輪郭線に対応するpatch群(x,y)タプル群としてもよい
-
         if len(results)>1:
             asset_dict = {'coords' :          results}
             
@@ -679,8 +729,8 @@ class WholeSlideImage(object):
                     'downsample':             self.level_downsamples[patch_level],
                     'downsampled_level_dim' : tuple(np.array(self.level_dim[patch_level])),
                     'level_dim':              self.level_dim[patch_level],
-                    'name':                   self.name,
-                    'save_path':              save_path}
+                    'name':                   self.name,}
+                    #'save_path':              save_path}
 
             attr_dict = { 'coords' : attr}
             return asset_dict, attr_dict

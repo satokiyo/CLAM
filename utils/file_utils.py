@@ -33,3 +33,53 @@ def save_hdf5(output_path, asset_dict, attr_dict= None, mode='a'):
             dset[-data_shape[0]:] = val
     file.close()
     return output_path
+
+
+def create_hdf5_group(h5py_obj, group_name):
+    if group_name in h5py_obj:
+        #print(f"already exist group {group_name}")
+        return h5py_obj[group_name]
+    else:
+        print(f"create group {group_name}")
+        return h5py_obj.create_group(group_name)
+
+
+def create_hdf5_dataset(h5py_obj, dset_name, data):
+    if dset_name in h5py_obj:
+        #print(f"already exist dataset {dset_name}")
+        pass
+
+    else:
+        print(f"create dataset {dset_name}")
+        data_shape = data.shape
+        data_type = data.dtype
+        #chunk_shape = (1, ) + data_shape[1:]
+        #maxshape = (None, ) + data_shape[1:]
+        h5py_obj.create_dataset(dset_name, shape=data_shape, dtype=data_type, data=data) # maxshape=maxshape, chunks=chunk_shape, dtype=data_type)
+ 
+
+def create_hdf5_attrs(h5py_obj, name, data):
+    if name in h5py_obj.attrs.keys():
+        #print(f"already exist attr {name}")
+        pass
+    else:
+        print(f"create attr {name}")
+        h5py_obj.attrs.create(name=name, data=data)
+
+
+def open_hdf5_file(path, mode):
+    '''
+    wait until file ready to open
+    '''
+    while True:
+        count=0
+        try:
+            f = h5py.File(path, mode=mode)
+            return f 
+        except:
+            #print('not ready')
+            count+=1
+            if count > 100:
+                raise
+            pass
+

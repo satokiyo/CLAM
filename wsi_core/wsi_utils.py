@@ -6,6 +6,7 @@ from wsi_core.util_classes import Mosaic_Canvas
 from PIL import Image
 import math
 import cv2
+from utils.file_utils import create_hdf5_group, create_hdf5_dataset, create_hdf5_attrs, open_hdf5_file
 
 def isWhitePatch(patch, satThresh=5):
     patch_hsv = cv2.cvtColor(patch, cv2.COLOR_RGB2HSV)
@@ -288,44 +289,52 @@ def StitchPatches(hdf5_file_path, downscale=16, draw_grid=False, bg_color=(0,0,0
     file.close()
     return heatmap
 
-def StitchCoords(hdf5_file_path, wsi_object, downscale=16, draw_grid=False, draw_contour=False, bg_color=(0,0,0), alpha=-1):
+def StitchCoords(hdf5_file_path, wsi_object, target, downscale=16, draw_grid=False, draw_contour=False, bg_color=(0,0,0), alpha=-1):
+    assert target in ['detection', 'segmentation']
     wsi = wsi_object.getOpenSlide()
     vis_level = wsi.get_best_level_for_downsample(downscale)
-    file = h5py.File(hdf5_file_path, 'r')
-    dset = file['coords']
-    dset_cont_idx = file['cont_idx'][:]
-    coords = dset[:]
     w, h = wsi.level_dimensions[0] # image size at level0
 
-    print('start stitching {}'.format(dset.attrs['name']))
+    file = open_hdf5_file(hdf5_file_path, mode='r')
+    print('start stitching {}'.format(file['contours'].attrs['name']))
     print('original size: {} x {}'.format(w, h))
-
     w, h = wsi.level_dimensions[vis_level] # image size at 'heatmap level' for stitching. (Not level0 nor patch level)
-
     print('downscaled size for stiching: {} x {}'.format(w, h))
-    print('number of patches: {}'.format(len(coords)))
-    
-    patch_size = dset.attrs['patch_size']
-    patch_level = dset.attrs['patch_level']
-    print('patch size: {}x{} patch level: {}'.format(patch_size, patch_size, patch_level)) # patch levelでのpatch size
-    patch_size = tuple((np.array((patch_size, patch_size)) * wsi.level_downsamples[patch_level]).astype(np.int32)) # level0でのpatch size
-    print('ref patch size: {}x{}'.format(patch_size, patch_size))
 
-    if w*h > Image.MAX_IMAGE_PIXELS: 
-        raise Image.DecompressionBombError("Visualization Downscale %d is too large" % downscale)
-    
-    if alpha < 0 or alpha == -1:
-        heatmap = Image.new(size=(w,h), mode="RGB", color=bg_color)
-    else:
-        heatmap = Image.new(size=(w,h), mode="RGBA", color=bg_color + (int(255 * alpha),))
-
-    heatmap = np.array(heatmap)
-
+    ret = []
     # contour毎に処理する
-    assert len(wsi_object.contours_tissue) == len(dset_cont_idx)
-    for contour_id, cont in enumerate(wsi_object.contours_tissue):
-        cont_idx = dset_cont_idx[contour_id]
-        DrawMapFromCoords(heatmap, wsi_object, coords[cont_idx[0] : cont_idx[1]], patch_size, vis_level, indices=None, draw_grid=draw_grid)
+    for cont in file['contours']:
+        grp = file[f'contours/{cont}/patches/{target}']
+        # retrieve all target patches
+        coords_buf = []
+        def get_dataset_coord(name, obj):
+            if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'coord'):
+            #if isinstance(obj, h5py.Dataset):
+                print(obj.name)
+                coords_buf.append(obj[:])
+        grp.visititems(get_dataset_coord)
+
+        print('start stitching {}'.format(grp.name))
+        print('contour {}'.format(cont))
+        print('number of patches: {}'.format(len(coords_buf)))
+    
+        patch_size = grp.attrs['patch_size']
+        patch_level = grp.attrs['patch_level']
+        print('patch size: {}x{} patch level: {}'.format(patch_size, patch_size, patch_level)) # patch levelでのpatch size
+        patch_size = tuple((np.array((patch_size, patch_size)) * wsi.level_downsamples[patch_level]).astype(np.int32)) # level0でのpatch size
+        print('ref patch size: {}x{}'.format(patch_size, patch_size))
+
+        if w*h > Image.MAX_IMAGE_PIXELS: 
+            raise Image.DecompressionBombError("Visualization Downscale %d is too large" % downscale)
+    
+        if alpha < 0 or alpha == -1:
+            heatmap = Image.new(size=(w,h), mode="RGB", color=bg_color)
+        else:
+            heatmap = Image.new(size=(w,h), mode="RGBA", color=bg_color + (int(255 * alpha),))
+
+        heatmap = np.array(heatmap)
+
+        DrawMapFromCoords(heatmap, wsi_object, coords_buf, patch_size, vis_level, indices=None, draw_grid=draw_grid)
 
         if draw_contour:
             color = (0,255,0)
@@ -338,29 +347,30 @@ def StitchCoords(hdf5_file_path, wsi_object, downscale=16, draw_grid=False, draw
             offset = tuple(-(np.array(top_left) * scale).astype(int))
 
             if not number_contours:
-#                cv2.drawContours(heatmap, wsi_object.scaleContourDim(wsi_object.contours_tissue, scale), 
-                cv2.drawContours(heatmap, wsi_object.scaleContourDim(cont, scale), 
+                cv2.drawContours(heatmap, wsi_object.scaleContourDim(file[f'contours/{cont}/coords_contour'], scale), 
                                  -1, color, line_thickness, lineType=cv2.LINE_8, offset=offset)
 
             else: # add numbering to each contour
-#                for idx, cont in enumerate(wsi_object.contours_tissue):
-                contour = np.array(wsi_object.scaleContourDim(cont, scale))
+                contour = np.array(wsi_object.scaleContourDim(file[f'contours/{cont}/coords_contour'], scale))
                 M = cv2.moments(contour)
                 cX = int(M["m10"] / (M["m00"] + 1e-9))
                 cY = int(M["m01"] / (M["m00"] + 1e-9))
                 # draw the contour and put text next to center
                 cv2.drawContours(heatmap,  [contour], -1, color, line_thickness, lineType=cv2.LINE_8, offset=offset)
-                cv2.putText(heatmap, "{}".format(contour_id), (cX, cY),
+                cv2.putText(heatmap, "{}".format(cont), (cX, cY),
                         cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 5)
 
             for holes in wsi_object.holes_tissue:
                 cv2.drawContours(heatmap, wsi_object.scaleContourDim(holes, scale), 
                                  -1, hole_color, line_thickness, lineType=cv2.LINE_8)
 
-    heatmap = Image.fromarray(heatmap)
+        heatmap = Image.fromarray(heatmap)
+        ret.append(heatmap)
 
     file.close()
-    return heatmap
+
+    return ret
+    #return heatmap
 
 def StitchPoints(hdf5_file_path, wsi_object, downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, draw_contour=False, heatmap=None):
     '''
