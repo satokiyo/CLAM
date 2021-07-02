@@ -237,12 +237,11 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
         if patch:
             start_time = time.time()
 
-            proc_dict = {"detection" : patch_level_detection, "segmentation" : patch_level_segmentation}
-            for key, patch_level in proc_dict.items():
-                current_patch_params.update({'patch_level': patch_level, 'patch_size': patch_size, 'step_size': step_size, 
-                                             'save_path': patch_save_dir})
-                # Patch and save in WSI_object.hdf5_file
-                WSI_object.process_contours(target=key, **current_patch_params)
+            patch_levels = {"detection" : patch_level_detection, "segmentation" : patch_level_segmentation}
+            current_patch_params.update({'patch_level': patch_levels, 'patch_size': patch_size, 'step_size': step_size, 
+                                         'save_path': patch_save_dir})
+            # Patch and save in WSI_object.hdf5_file
+            WSI_object.process_contours(**current_patch_params)
             
             patch_time_elapsed = time.time() - start_time
 
@@ -254,20 +253,14 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
             file_path = WSI_object.hdf5_file
             if os.path.isfile(file_path):
                 start = time.time()
-                proc_dict = {"detection" : patch_level_detection, "segmentation" : patch_level_segmentation}
-                for key, patch_level in proc_dict.items():
-                    # Patch and save in WSI_object.hdf5_file
+                # Patch and save in WSI_object.hdf5_file
  
-                    # Stitch
-                    heatmap = StitchCoords(file_path, WSI_object, target=key, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True)
+                # Stitch
+                StitchCoords(file_path, WSI_object, stitch_save_dir, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True) # heatmap for each contour
+                import pdb;pdb.set_trace()
 
-                    stitch_time_elapsed = time.time() - start
-                    for i, hm in enumerate(heatmap): 
-                        stitch_path = os.path.join(stitch_save_dir, slide_id+f'{key}_cont{i}.jpg')
-                        hm.save(stitch_path)
                 # TODO
                 # contour毎ではなく、全contourの集合に対してのstitchingを実行する
-                import pdb;pdb.set_trace()
 
 
         # forward detection model.
