@@ -6,7 +6,7 @@ from wsi_core.util_classes import Mosaic_Canvas
 from PIL import Image
 import math
 import cv2
-from utils.file_utils import create_hdf5_group, create_hdf5_dataset, create_hdf5_attrs, open_hdf5_file
+from utils.file_utils import open_hdf5_file
 
 def isWhitePatch(patch, satThresh=5):
     patch_hsv = cv2.cvtColor(patch, cv2.COLOR_RGB2HSV)
@@ -290,11 +290,17 @@ def StitchPatches(hdf5_file_path, downscale=16, draw_grid=False, bg_color=(0,0,0
     return heatmap
 
 def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=False, draw_contour=False, bg_color=(0,0,0), alpha=-1):
+    '''
+    パッチ座標をもとにパッチを切り出したヒートマップを作成する
+    '''
     wsi = wsi_object.getOpenSlide()
     vis_level = wsi.get_best_level_for_downsample(downscale)
     w, h = wsi.level_dimensions[0] # image size at level0
 
     def stitch_coords(coords_patch, patch_size, target, coords_contours):
+        '''
+        処理の共通部分のクロージャ
+        '''
         if w*h > Image.MAX_IMAGE_PIXELS: 
             raise Image.DecompressionBombError("Visualization Downscale %d is too large" % downscale)
         
@@ -340,7 +346,10 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
     
         heatmap = Image.fromarray(heatmap)
         return heatmap
+
+
  
+    # hdf5の読み込み
     file = open_hdf5_file(hdf5_file_path, mode='r')
 
     print('start stitching {}'.format(file.attrs['name']))
@@ -365,13 +374,16 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
         coords_all_contour = {} # 全てのcontourの輪郭座標保存用
 
         # contour毎に処理する
-        for i, cont in enumerate(sorted(grp_target)):
+        for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
             grp_cont = file[f'{target}/{cont}']
 
             coords_patch = [] # 一つのcontourのパッチ座標保存用
             def get_dataset_coord(name, obj):
+                '''
+                パッチ座標の読み込み。以下の階層にdatasetがある。
+                /target/contourxx/patchxx/coord
+                '''
                 if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'coord'):
-                #if isinstance(obj, h5py.Dataset):
                     print(obj.name)
                     coords_patch.append(obj[:])
             grp_cont.visititems(get_dataset_coord)
@@ -403,7 +415,6 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
         # save
         save_path = os.path.join(save_dir, f'{wsi_object.name}_{target}_all.jpg')
         heatmap.save(save_path)
-        #ret_dict[target]['all'] = heatmap
 
     file.close()
 

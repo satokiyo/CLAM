@@ -552,17 +552,17 @@ class WholeSlideImage(object):
 
     def process_contours(self, save_path, patch_level={'detection':40, 'segmentation':10}, patch_size=256, step_size=256, **kwargs):
         '''
-        wsi中の全てのcontoursに対して処理をする
-        'coords'datasetに各contour idに対応するパッチ領域の座標リストを保持する
-        パッチ領域の座標リストがどのcontourに属するものかを参照出来るように、各contour idのパッチ領域の座標リストのインデクスを'cont_idx'datasetに保持する
-        (Ex)
-        cont_id = 2
-        idx = dataset['cont_idx'][cont_id]
-        cont_2_coords = dataset['coords'][idx]
+        wsi中の全てのcontours(囲み領域)に対して処理をする
 
-        Args
-          patch_level : dict of patch_level for 'detection' or 'segmentation'. make hdfs groups for each target and save. 
+        hdf5 fileのdatasetとして以下のような階層構造で情報を持たせる
 
+        /target/contourxx/coords_contour : 囲み領域の点の座標
+        /target/contourxx/patchxx/coord  : パッチの座標
+        (target = detection or segmentation)
+
+        以下の階層に属性情報を持つ
+        /       : name(スライド名)
+        /target : patch_size, patch_level, downsample, downsampled_level_dim, level_dim
 
         '''
         save_path_hdf5 = os.path.join(save_path, str(self.name) + '.h5')
@@ -587,26 +587,25 @@ class WholeSlideImage(object):
                     'patch_level' :           patch_level[target], # patch_level. Not ref level(level 0)
                     'downsample':             self.level_downsamples[patch_level[target]],
                     'downsampled_level_dim' : tuple(np.array(self.level_dim[patch_level[target]])),
-                    'level_dim':              self.level_dim[patch_level[target]],
-                    'name':                   self.name,}
+                    'level_dim':              self.level_dim[patch_level[target]],}
             for name, data in attr.items():
                 create_hdf5_attrs(grp, name=name, data=data) 
 
 
             for idx_cont, cont in enumerate(self.contours_tissue): # contour coords at level0
-                #TODO contourを比較し、差分を確認し、新規追加または無くなったcontourについては該当groupの削除
+                #TODO contourを比較し、差分を確認し、新規追加または無くなったcontourについては該当groupの削除(削除しないと、この後の処理でforwardやTC(+)の完了有無のチェック時に不整合が起こる)
                 grp_cont = create_hdf5_group(grp, f'contour{idx_cont}') # /target/contourxx
                 create_hdf5_dataset(grp_cont, 'coords_contour', data=cont) # dataset at /target/contourxx/coords_contour
-#                grp_patches = create_hdf5_group(grp_cont, f'patches/{target}') # /target/contourxx/patches/target(detection or segmentation)
     
                 if (idx_cont + 1) % fp_chunk_size == fp_chunk_size:
                     print('Processing contour {}/{}'.format(idx_cont, n_contours))
                 asset_dict, attr_dict = self.process_contour(cont, self.holes_tissue[idx_cont], patch_level[target], save_path, patch_size, step_size, **kwargs)
+
                 # save attrs
                 if len(asset_dict) > 0:
                     # save attrs for patches
-                    for key, val in attr_dict['coords'].items(): 
-                        create_hdf5_attrs(grp_cont, name=key, data=val) # attrs at /target/contourxx/
+#                    for key, val in attr_dict['coords'].items(): 
+#                        create_hdf5_attrs(grp_cont, name=key, data=val) # attrs at /target/contourxx/
                     # save assets per patch
                     for idx_patch, coord in enumerate(asset_dict['coords']):
                         grp_patch = create_hdf5_group(grp_cont, f'patch{idx_patch}') # /target/contourxx/patchxx
@@ -656,11 +655,7 @@ class WholeSlideImage(object):
     def process_contour(self, cont, contour_holes, patch_level, save_path, patch_size = 256, step_size = 256,
         contour_fn='four_pt', use_padding=True, top_left=None, bot_right=None):
         '''
-        contour id毎に対応するパッチ領域を取得する
-        TODO
-        パッチのtopleftのxy tupleの集合をcontour毎に管理し、それをcontourに対するpatchのインデクスの代わりにする。
-        全てのcountourのxy tupleの和集合をとれば、全patchのsummaryを計算するとき用のpatchを取得できる。
-
+        contour毎に対応するパッチの座標を取得する
         '''
         # 輪郭線のBBOX
         start_x, start_y, w, h = cv2.boundingRect(cont) if cont is not None else (0, 0, self.level_dim[patch_level][0], self.level_dim[patch_level][1])

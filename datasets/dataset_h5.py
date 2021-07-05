@@ -18,154 +18,195 @@ import h5py
 from random import randrange
 
 def eval_transforms(pretrained=False):
-	if pretrained:
-		mean = (0.485, 0.456, 0.406)
-		std = (0.229, 0.224, 0.225)
+    if pretrained:
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
 
-	else:
-		mean = (0.5,0.5,0.5)
-		std = (0.5,0.5,0.5)
+    else:
+        mean = (0.5,0.5,0.5)
+        std = (0.5,0.5,0.5)
 
-	trnsfrms_val = transforms.Compose(
-					[
-					 transforms.ToTensor(),
-					 transforms.Normalize(mean = mean, std = std)
-					]
-				)
+    trnsfrms_val = transforms.Compose(
+                    [
+                     transforms.ToTensor(),
+                     transforms.Normalize(mean = mean, std = std)
+                    ]
+                )
 
-	return trnsfrms_val
+    return trnsfrms_val
 
 class Whole_Slide_Bag(Dataset):
-	def __init__(self,
-		file_path,
-		pretrained=False,
-		custom_transforms=None,
-		target_patch_size=-1,
-		):
-		"""
-		Args:
-			file_path (string): Path to the .h5 file containing patched data.
-			pretrained (bool): Use ImageNet transforms
-			custom_transforms (callable, optional): Optional transform to be applied on a sample
-		"""
-		self.pretrained=pretrained
-		if target_patch_size > 0:
-			self.target_patch_size = (target_patch_size, target_patch_size)
-		else:
-			self.target_patch_size = None
+    def __init__(self,
+        file_path,
+        pretrained=False,
+        custom_transforms=None,
+        target_patch_size=-1,
+        ):
+        """
+        Args:
+            file_path (string): Path to the .h5 file containing patched data.
+            pretrained (bool): Use ImageNet transforms
+            custom_transforms (callable, optional): Optional transform to be applied on a sample
+        """
+        self.pretrained=pretrained
+        if target_patch_size > 0:
+            self.target_patch_size = (target_patch_size, target_patch_size)
+        else:
+            self.target_patch_size = None
 
-		if not custom_transforms:
-			self.roi_transforms = eval_transforms(pretrained=pretrained)
-		else:
-			self.roi_transforms = custom_transforms
+        if not custom_transforms:
+            self.roi_transforms = eval_transforms(pretrained=pretrained)
+        else:
+            self.roi_transforms = custom_transforms
 
-		self.file_path = file_path
+        self.file_path = file_path
 
-		with h5py.File(self.file_path, "r") as f:
-			dset = f['imgs']
-			self.length = len(dset)
+        with h5py.File(self.file_path, "r") as f:
+            dset = f['imgs']
+            self.length = len(dset)
 
-		self.summary()
-			
-	def __len__(self):
-		return self.length
+        self.summary()
+            
+    def __len__(self):
+        return self.length
 
-	def summary(self):
-		hdf5_file = h5py.File(self.file_path, "r")
-		dset = hdf5_file['imgs']
-		for name, value in dset.attrs.items():
-			print(name, value)
+    def summary(self):
+        hdf5_file = h5py.File(self.file_path, "r")
+        dset = hdf5_file['imgs']
+        for name, value in dset.attrs.items():
+            print(name, value)
 
-		print('pretrained:', self.pretrained)
-		print('transformations:', self.roi_transforms)
-		if self.target_patch_size is not None:
-			print('target_size: ', self.target_patch_size)
+        print('pretrained:', self.pretrained)
+        print('transformations:', self.roi_transforms)
+        if self.target_patch_size is not None:
+            print('target_size: ', self.target_patch_size)
 
-	def __getitem__(self, idx):
-		with h5py.File(self.file_path,'r') as hdf5_file:
-			img = hdf5_file['imgs'][idx]
-			coord = hdf5_file['coords'][idx]
-		
-		img = Image.fromarray(img)
-		if self.target_patch_size is not None:
-			img = img.resize(self.target_patch_size)
-		img = self.roi_transforms(img).unsqueeze(0)
-		return img, coord
+    def __getitem__(self, idx):
+        with h5py.File(self.file_path,'r') as hdf5_file:
+            img = hdf5_file['imgs'][idx]
+            coord = hdf5_file['coords'][idx]
+        
+        img = Image.fromarray(img)
+        if self.target_patch_size is not None:
+            img = img.resize(self.target_patch_size)
+        img = self.roi_transforms(img).unsqueeze(0)
+        return img, coord
 
 class Whole_Slide_Bag_FP(Dataset):
-	def __init__(self,
-		file_path,
-		wsi,
-		pretrained=False,
-		custom_transforms=None,
-		custom_downsample=1,
-		target_patch_size=-1
-		):
-		"""
-		Args:
-			file_path (string): Path to the .h5 file containing patched data.
-			pretrained (bool): Use ImageNet transforms
-			custom_transforms (callable, optional): Optional transform to be applied on a sample
-			custom_downsample (int): Custom defined downscale factor (overruled by target_patch_size)
-			target_patch_size (int): Custom defined image size before embedding
-		"""
-		self.pretrained=pretrained
-		self.wsi = wsi
-		if not custom_transforms:
-			self.roi_transforms = eval_transforms(pretrained=pretrained)
-		else:
-			self.roi_transforms = custom_transforms
+    def __init__(self,
+        file_path,
+        wsi,
+        pretrained=False,
+        custom_transforms=None,
+        custom_downsample=1,
+        target_patch_size=-1,
+        target=None,
+        detection_loc=False,
+        ):
+        """
+        Args:
+            file_path (string): Path to the .h5 file containing patched data.
+            pretrained (bool): Use ImageNet transforms
+            custom_transforms (callable, optional): Optional transform to be applied on a sample
+            custom_downsample (int): Custom defined downscale factor (overruled by target_patch_size)
+            target_patch_size (int): Custom defined image size before embedding
+            target (str): detection or segmentation
+            detection_loc (bool): Return detection_loc dataset. detection forward must be completed.
+        """
+        self.pretrained=pretrained
+        self.wsi = wsi
+        self.target = target
+        self.file_path = file_path
+        if not custom_transforms:
+            self.roi_transforms = eval_transforms(pretrained=pretrained)
+        else:
+            self.roi_transforms = custom_transforms
 
-		self.file_path = file_path
+        with h5py.File(self.file_path, "r") as f:
+            dset = f[f'/{target}']
+            self.patch_level = dset.attrs.get('patch_level')
+            self.patch_size = dset.attrs.get('patch_size')
+            self.slide_id = f.attrs.get('name')
+            if target_patch_size > 0:
+                self.target_patch_size = (target_patch_size, ) * 2
+            elif custom_downsample > 1:
+                self.target_patch_size = (self.patch_size // custom_downsample, ) * 2
+            else:
+                self.target_patch_size = None
 
-		with h5py.File(self.file_path, "r") as f:
-			dset = f['coords']
-			self.patch_level = f['coords'].attrs['patch_level']
-			self.patch_size = f['coords'].attrs['patch_size']
-			self.slide_id = f['coords'].attrs['name']
-			self.length = len(dset)
-			if target_patch_size > 0:
-				self.target_patch_size = (target_patch_size, ) * 2
-			elif custom_downsample > 1:
-				self.target_patch_size = (self.patch_size // custom_downsample, ) * 2
-			else:
-				self.target_patch_size = None
-		self.summary()
-			
-	def __len__(self):
-		return self.length
+            coords_patches = []
+            def get_dataset_coord(name, obj):
+                '''
+                パッチ座標の読み込み。以下の階層にdatasetがある。
+                /target/contourxx/patchxx/coord
+                '''
+                if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'coord'):
+                    #print(obj.name)
+                    #print(obj.parent.name)
+                    coords_patches.append((obj.parent.name, obj[:]))
+            dset.visititems(get_dataset_coord)
+            self.coords_patches = coords_patches
+            self.length = len(coords_patches)
 
-	def summary(self):
-		hdf5_file = h5py.File(self.file_path, "r")
-		dset = hdf5_file['coords']
-		for name, value in dset.attrs.items():
-			print(name, value)
+            if detection_loc:
+                coords_detection_loc = []
+                def get_dataset_detection_loc(name, obj):
+                    '''
+                    核検出座標の読み込み。以下の階層にdatasetがある。
+                    /target/contourxx/patchxx/detection_loc
+                    '''
+                    if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'detection_loc'):
+                        #print(obj.name)
+                        #print(obj.parent.name)
+#                        import pdb;pdb.set_trace()
+                        coords_detection_loc.append((obj.parent.name, obj[:].tolist()))
+                dset.visititems(get_dataset_detection_loc)
+                self.detection_loc_patches = coords_detection_loc
+            else:
+                self.detection_loc_patches = None
 
-		print('\nfeature extraction settings')
-		print('target patch size: ', self.target_patch_size)
-		print('pretrained: ', self.pretrained)
-		print('transformations: ', self.roi_transforms)
+        self.summary()
+            
+    def __len__(self):
+        return self.length
 
-	def __getitem__(self, idx):
-		with h5py.File(self.file_path,'r') as hdf5_file:
-			coord = hdf5_file['coords'][idx]
-		img = self.wsi.read_region(coord, self.patch_level, (self.patch_size, self.patch_size)).convert('RGB')
+    def summary(self):
+        hdf5_file = h5py.File(self.file_path, "r")
+        dset = hdf5_file[f'/{self.target}']
+        for name, value in dset.attrs.items():
+            print(name, value)
 
-		if self.target_patch_size is not None:
-			img = img.resize(self.target_patch_size)
-		img = self.roi_transforms(img)#.unsqueeze(0)
-		return img, coord
+        print('\nfeature extraction settings')
+        print('target patch size: ', self.target_patch_size)
+        print('pretrained: ', self.pretrained)
+        print('transformations: ', self.roi_transforms)
+
+    def __getitem__(self, idx):
+        grp_name_parent, coord = self.coords_patches[idx]
+        img = self.wsi.read_region(coord, self.patch_level, (self.patch_size, self.patch_size)).convert('RGB')
+
+        if self.target_patch_size is not None:
+            img = img.resize(self.target_patch_size)
+        img = self.roi_transforms(img)#.unsqueeze(0)
+        if self.detection_loc_patches:
+            _, detection_loc = self.detection_loc_patches[idx]
+            assert grp_name_parent == _
+            return img, coord, grp_name_parent, detection_loc
+        return img, coord, grp_name_parent
+
+
+
 
 class Dataset_All_Bags(Dataset):
 
-	def __init__(self, csv_path):
-		self.df = pd.read_csv(csv_path)
-	
-	def __len__(self):
-		return len(self.df)
+    def __init__(self, csv_path):
+        self.df = pd.read_csv(csv_path)
+    
+    def __len__(self):
+        return len(self.df)
 
-	def __getitem__(self, idx):
-		return self.df['slide_id'][idx]
+    def __getitem__(self, idx):
+        return self.df['slide_id'][idx]
 
 
 

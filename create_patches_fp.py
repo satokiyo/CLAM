@@ -75,7 +75,8 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                   seg = False, save_mask = True, 
                   stitch= False, 
                   patch = False, auto_skip=True, process_list = None,
-                  model_path_detection='', model_path_segmentation=''):
+                  model_path_detection='', model_path_segmentation='',
+                  intensity_thres=175, area_thres=0.1, radius=25):
     
 
 
@@ -246,21 +247,18 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
             patch_time_elapsed = time.time() - start_time
 
 
-        # save stitching heatmap of patches
-        stitch_time_elapsed = -1
-        if stitch:
-            #file_path = os.path.join(patch_save_dir, slide_id+'.h5')
-            file_path = WSI_object.hdf5_file
-            if os.path.isfile(file_path):
-                start = time.time()
-                # Patch and save in WSI_object.hdf5_file
- 
-                # Stitch
-                StitchCoords(file_path, WSI_object, stitch_save_dir, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True) # heatmap for each contour
-                import pdb;pdb.set_trace()
-
-                # TODO
-                # contour毎ではなく、全contourの集合に対してのstitchingを実行する
+#TODO 最後にstitch
+#        # save stitching heatmap of patches
+#        stitch_time_elapsed = -1
+#        if stitch:
+#            #file_path = os.path.join(patch_save_dir, slide_id+'.h5')
+#            file_path = WSI_object.hdf5_file
+#            if os.path.isfile(file_path):
+#                start = time.time()
+#                # Patch and save in WSI_object.hdf5_file
+# 
+#                # Stitch
+#                StitchCoords(file_path, WSI_object, stitch_save_dir, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True) # heatmap for each contour
 
 
         # forward detection model.
@@ -273,17 +271,17 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                 start = time.time()
                 from forward.forward import forward_detection, detect_tc_positive_nuclei
 
-                # detect
-                file_path = forward_detection(file_path, WSI_object, model_path=model_path_detection) # forward using trained model and save info to .h5 file.
+                # detect nuclei
+                file_path = forward_detection(file_path, WSI_object, patch_size, model_path=model_path_detection) # forward using trained model and save info to .h5 file.
 
-                # calc tc+
-                file_path = detect_tc_positive_nuclei(file_path, WSI_object) 
+                # determine TC+
+                file_path = detect_tc_positive_nuclei(file_path, WSI_object, intensity_thres=intensity_thres, area_thres=area_thres, radius=radius) 
 
                 # Stitch
-                heatmap = StitchPoints(file_path, WSI_object, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
+#                heatmap = StitchPoints(file_path, WSI_object, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
 
-                detect_path = os.path.join(stitch_save_dir, slide_id+'_detect.jpg')
-                heatmap.save(detect_path)
+#                detect_path = os.path.join(stitch_save_dir, slide_id+'_detect.jpg')
+#                heatmap.save(detect_path)
                 detection_time_elapsed = time.time() - start
 
                 
@@ -299,11 +297,25 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                 file_path = forward_segmentation(file_path, WSI_object, model_path=model_path_segmentation) # forward using trained model and save info to .h5 file.
 
                 # Stitch
-                heatmap = StitchSegMap(file_path, WSI_object, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
+#                heatmap = StitchSegMap(file_path, WSI_object, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
+#
+#                segmentation_path = os.path.join(stitch_save_dir, slide_id+'_segmentation.jpg')
+#                heatmap.save(segmentation_path)
+#                segmentation_time_elapsed = time.time() - start
 
-                segmentation_path = os.path.join(stitch_save_dir, slide_id+'_segmentation.jpg')
-                heatmap.save(segmentation_path)
-                segmentation_time_elapsed = time.time() - start
+
+        # save stitching heatmap of patches
+        stitch_time_elapsed = -1
+        if stitch:
+            #file_path = os.path.join(patch_save_dir, slide_id+'.h5')
+            file_path = WSI_object.hdf5_file
+            if os.path.isfile(file_path):
+                start = time.time()
+                # Patch and save in WSI_object.hdf5_file
+ 
+                # Stitch
+                StitchCoords(file_path, WSI_object, stitch_save_dir, downscale=8, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True) # heatmap for each contour
+
 
 
         print("segmentation took {} seconds".format(seg_time_elapsed))
@@ -354,6 +366,9 @@ parser.add_argument('--process_list',  type = str, default=None,
                     help='name of list of images to process with parameters (.csv)')
 parser.add_argument('--ckpts_detection', type=str, default='')
 parser.add_argument('--ckpts_segmentation', type=str, default='')
+parser.add_argument('--intensity_thres', type=int, default=175)
+parser.add_argument('--area_thres', type=float, default=0.1)
+parser.add_argument('--radius', type=int, default=25)
 
 
 if __name__ == '__main__':
@@ -427,4 +442,10 @@ if __name__ == '__main__':
                                             patch = args.patch,
                                             process_list = process_list, auto_skip=args.no_auto_skip,
                                             model_path_detection=args.ckpts_detection,
-                                            model_path_segmentation=args.ckpts_segmentation)
+                                            model_path_segmentation=args.ckpts_segmentation,
+                                            intensity_thres=args.intensity_thres,
+                                            area_thres=args.area_thres,
+                                            radius=args.radius)
+
+# TODO
+# hdf5 fileからROIをjpgにして保存する機能
