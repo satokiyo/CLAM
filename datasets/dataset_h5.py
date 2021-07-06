@@ -111,7 +111,7 @@ class Whole_Slide_Bag_FP(Dataset):
             custom_downsample (int): Custom defined downscale factor (overruled by target_patch_size)
             target_patch_size (int): Custom defined image size before embedding
             target (str): detection or segmentation
-            detection_loc (bool): Return detection_loc dataset. detection forward must be completed.
+            detection_loc (bool): Return detection_loc dataset additionally. detection_loc dataset must exists. i.e. detection forward must be completed.
         """
         self.pretrained=pretrained
         self.wsi = wsi
@@ -158,7 +158,6 @@ class Whole_Slide_Bag_FP(Dataset):
                     if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'detection_loc'):
                         #print(obj.name)
                         #print(obj.parent.name)
-#                        import pdb;pdb.set_trace()
                         coords_detection_loc.append((obj.parent.name, obj[:].tolist()))
                 dset.visititems(get_dataset_detection_loc)
                 self.detection_loc_patches = coords_detection_loc
@@ -189,8 +188,8 @@ class Whole_Slide_Bag_FP(Dataset):
             img = img.resize(self.target_patch_size)
         img = self.roi_transforms(img)#.unsqueeze(0)
         if self.detection_loc_patches:
-            _, detection_loc = self.detection_loc_patches[idx]
-            assert grp_name_parent == _
+            _grp_name_parent, detection_loc = self.detection_loc_patches[idx]
+            assert grp_name_parent == _grp_name_parent # datasets coord and detection_loc is under the same directory hierarchy.
             return img, coord, grp_name_parent, detection_loc
         return img, coord, grp_name_parent
 

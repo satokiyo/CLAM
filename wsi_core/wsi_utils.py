@@ -7,6 +7,7 @@ from PIL import Image
 import math
 import cv2
 from utils.file_utils import open_hdf5_file
+import utils.utils as utils
 
 def isWhitePatch(patch, satThresh=5):
     patch_hsv = cv2.cvtColor(patch, cv2.COLOR_RGB2HSV)
@@ -162,13 +163,13 @@ def DrawGrid(img, coord, shape, thickness=1, color=(0,0,0,128)):
     cv2.rectangle(img, tuple(np.maximum([0, 0], coord-thickness//2)), tuple(coord - thickness//2 + np.array(shape)), color, thickness=thickness)
     return img
 
-def DrawMap(canvas, patch_dset, coords, patch_size, indices=None, verbose=1, draw_grid=True):
+def DrawMap(canvas, patch_dset, coords, patch_size, indices=None, verbose=1, draw_grid=True, file=None):
     if indices is None:
         indices = np.arange(len(coords))
     total = len(indices)
     if verbose > 0:
         ten_percent_chunk = math.ceil(total * 0.1)
-        print('start stitching {}'.format(patch_dset.attrs['wsi_name']))
+        #print('start stitching {}'.format(patch_dset.attrs['wsi_name']))
     
     for idx in range(total):
         if verbose > 0:
@@ -176,8 +177,8 @@ def DrawMap(canvas, patch_dset, coords, patch_size, indices=None, verbose=1, dra
                 print('progress: {}/{} stitched'.format(idx, total))
         
         patch_id = indices[idx]
-        patch = patch_dset[patch_id]
-        patch = cv2.resize(patch, patch_size)
+        patch = file[patch_dset[patch_id]]
+        #patch = cv2.resize(patch, patch_size)
         coord = coords[patch_id]
         canvas_crop_shape = canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3].shape[:2]
         canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3] = patch[:canvas_crop_shape[0], :canvas_crop_shape[1], :]
@@ -218,44 +219,6 @@ def DrawMapFromCoords(canvas, wsi_object, coords, patch_size, vis_level, indices
 
     return Image.fromarray(canvas)
 
-def DrawMapNucleiDetection(canvas, wsi_object, coords, nuclei_coords, patch_size, vis_level, indices=None, verbose=1, draw_grid=True):
-    '''
-    Args:
-      coords : top-left (x,y) coordinates at level 0
-      nuclei_coords : array of (x,y) coordinates of nuclei centers in a Region at level 0
-      patch_size : patch size at level 0
-      vis_level : disired vis level
-    '''
-    downsamples = wsi_object.wsi.level_downsamples[vis_level]
-    if indices is None:
-        indices = np.arange(len(coords))
-    total = len(indices)
-    if verbose > 0:
-        ten_percent_chunk = math.ceil(total * 0.1)
-        
-    patch_size = tuple(np.ceil((np.array(patch_size)/np.array(downsamples))).astype(np.int32)) # convert patch_size from level 0 to vis_level.
-    print('downscaled patch size: {}x{}'.format(patch_size[0], patch_size[1]))
-    
-    for patch_id in range(total):
-        if verbose > 0:
-            if patch_id % ten_percent_chunk == 0:
-                print('progress: {}/{} stitched'.format(patch_id, total))
-        
-        coord = coords[patch_id] # coord at level0
-        patch = np.array(wsi_object.wsi.read_region(tuple(coord), vis_level, patch_size).convert("RGB")) # coord is the location (x, y) tuple giving the top left pixel in the level 0 reference frame
-        coord = np.ceil(coord / downsamples).astype(np.int32) # convert coord for vis_level
-        canvas_crop_shape = canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3].shape[:2]
-        canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3] = patch[:canvas_crop_shape[0], :canvas_crop_shape[1], :]
-        if draw_grid:
-            DrawGrid(canvas, coord, patch_size)
-
-    return Image.fromarray(canvas)
-
-
-
-
-
-
 
 def StitchPatches(hdf5_file_path, downscale=16, draw_grid=False, bg_color=(0,0,0), alpha=-1):
     file = h5py.File(hdf5_file_path, 'r')
@@ -289,7 +252,7 @@ def StitchPatches(hdf5_file_path, downscale=16, draw_grid=False, bg_color=(0,0,0
     file.close()
     return heatmap
 
-def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=False, draw_contour=False, bg_color=(0,0,0), alpha=-1):
+def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=False, draw_contour=False, bg_color=(0,0,0), alpha=-1, overlaymap=None):
     '''
     パッチ座標をもとにパッチを切り出したヒートマップを作成する
     '''
@@ -345,6 +308,10 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
                                  -1, hole_color, line_thickness, lineType=cv2.LINE_8)
     
         heatmap = Image.fromarray(heatmap)
+
+        if overlaymap:
+            heatmap = overlay(heatmap, ovealaymap)
+
         return heatmap
 
 
@@ -384,7 +351,7 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
                 /target/contourxx/patchxx/coord
                 '''
                 if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'coord'):
-                    print(obj.name)
+                    #print(obj.name)
                     coords_patch.append(obj[:])
             grp_cont.visititems(get_dataset_coord)
             coords_all_patch.extend(coords_patch)
@@ -417,118 +384,6 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
         heatmap.save(save_path)
 
     file.close()
-
-
-def StitchPoints(hdf5_file_path, wsi_object, downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, draw_contour=False, heatmap=None):
-    '''
-
-    Args:
-
-    Returns:
-
-    '''
-    if not heatmap:
-        heatmap = StitchCoords(hdf5_file_path, wsi_object, downscale=downscale, bg_color=bg_color, alpha=alpha, draw_grid=draw_grid, draw_contour=draw_contour)
-
-    # stich nuclei points
-    wsi = wsi_object.getOpenSlide()
-    vis_level = wsi.get_best_level_for_downsample(downscale)
-    file = h5py.File(hdf5_file_path, 'r')
-    dset = file['coords']
-    dset2 = file['nuclei_detection_loc'] # 1:n = roi coords : nuclei coords
-    dset3 = file['nuclei_detection_dab_intensity'] 
-    dset4 = file['nuclei_detection_tc_pos_indices'] 
-    dset_cont_idx = file['cont_idx'][:]
-    import pdb;pdb.set_trace()
-
-    coords = dset[:]
-    w, h = wsi.level_dimensions[0] # image size at level0
-
-    print('start stitching {}'.format(dset.attrs['name']))
-    print('original size: {} x {}'.format(w, h))
-
-    w, h = wsi.level_dimensions[vis_level] # image size at 'heatmap level' for stitching. (Not level0 nor patch level)
-
-    print('downscaled size for stiching: {} x {}'.format(w, h))
-    print('number of patches: {}'.format(len(coords)))
-    
-    patch_size = dset.attrs['patch_size']
-    patch_level = dset.attrs['patch_level']
-    print('patch size: {}x{} patch level: {}'.format(patch_size, patch_size, patch_level)) # patch levelでのpatch size
-    patch_size = tuple((np.array((patch_size, patch_size)) * wsi.level_downsamples[patch_level]).astype(np.int32)) # level0でのpatch size
-    print('ref patch size: {}x{}'.format(patch_size, patch_size))
-    nuclei_coords = np.array(nuclei_coords * wsi.level_downsamples[patch_level]).astype(np.int32) # convert nuclei coords to level 0
-
-    if w*h > Image.MAX_IMAGE_PIXELS: 
-        raise Image.DecompressionBombError("Visualization Downscale %d is too large" % downscale)
-    
-#    if alpha < 0 or alpha == -1:
-#        heatmap = Image.new(size=(w,h), mode="RGB", color=bg_color)
-#    else:
-#        heatmap = Image.new(size=(w,h), mode="RGBA", color=bg_color + (int(255 * alpha),))
-#    
-#    heatmap = np.array(heatmap)
-#    heatmap = DrawMapFromCoords(heatmap, wsi_object, coords, patch_size, vis_level, indices=None, draw_grid=draw_grid)
-
-
-    # contour毎に処理する
-    assert len(wsi_object.contours_tissue) == len(dset_cont_idx)
-    for contour_id, cont in enumerate(wsi_object.contours_tissue):
-        cont_idx = dset_cont_idx[contour_id]
-        #DrawMapFromCoords(heatmap, wsi_object, coords[cont_idx[0] : cont_idx[1]], patch_size, vis_level, indices=None, draw_grid=draw_grid)
-        heatmap = DrawMapNucleiDetection(heatmap, wsi_object, coords[cont_idx[0] : cont_idx[1]], nuclei_coords, patch_size, vis_level, indices=None, draw_grid=draw_grid)
-    
-    file.close()
-    return heatmap
-
-
-
-
-
-def StitchSegMap(file_path, wsi_object, downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False):
-    '''
-
-    Args:
-
-    Returns:
-
-    '''
-    # TODO
-    wsi = wsi_object.getOpenSlide()
-    vis_level = wsi.get_best_level_for_downsample(downscale)
-    file = h5py.File(hdf5_file_path, 'r')
-    dset = file['coords']
-    coords = dset[:]
-    w, h = wsi.level_dimensions[0] # image size at level0
-
-    print('start stitching {}'.format(dset.attrs['name']))
-    print('original size: {} x {}'.format(w, h))
-
-    w, h = wsi.level_dimensions[vis_level] # image size at 'heatmap level' for stitching. (Not level0 nor patch level)
-
-    print('downscaled size for stiching: {} x {}'.format(w, h))
-    print('number of patches: {}'.format(len(coords)))
-    
-    patch_size = dset.attrs['patch_size']
-    patch_level = dset.attrs['patch_level']
-    print('patch size: {}x{} patch level: {}'.format(patch_size, patch_size, patch_level)) # patch levelでのpatch size
-    patch_size = tuple((np.array((patch_size, patch_size)) * wsi.level_downsamples[patch_level]).astype(np.int32)) # level0でのpatch size
-    print('ref patch size: {}x{}'.format(patch_size, patch_size))
-
-    if w*h > Image.MAX_IMAGE_PIXELS: 
-        raise Image.DecompressionBombError("Visualization Downscale %d is too large" % downscale)
-    
-    if alpha < 0 or alpha == -1:
-        heatmap = Image.new(size=(w,h), mode="RGB", color=bg_color)
-    else:
-        heatmap = Image.new(size=(w,h), mode="RGBA", color=bg_color + (int(255 * alpha),))
-    
-    heatmap = np.array(heatmap)
-    heatmap = DrawMapFromCoords(heatmap, wsi_object, coords, patch_size, vis_level, indices=None, draw_grid=draw_grid)
-    
-    file.close()
-    return heatmap
-
 
 
 
@@ -581,3 +436,165 @@ def SamplePatches(coords_file_path, save_file_path, wsi_object,
         mode='a'
 
     return canvas, len(coords), len(indices)
+
+
+
+def calculate_TPS(file_path, wsi_object):
+    '''
+    パッチ座標をもとにパッチを切り出したヒートマップを作成する
+    '''
+    wsi = wsi_object.getOpenSlide()
+
+    # hdf5の読み込み
+    file = open_hdf5_file(file_path, mode='r')
+
+    print('start calculating TPS {}'.format(file.attrs['name']))
+
+    target = 'segmentation'
+
+    grp_target = file[target]
+
+    # 全contourの情報を取得
+    coords_all_patch = [] # 全てのcontourのパッチ座標保存用
+    segmap_all_patch = [] # 全てのcontourのsegmap保存用
+    coords_all_contour = {} # 全てのcontourの輪郭座標保存用
+
+    for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
+        grp_cont = file[f'{target}/{cont}']
+
+        coords_patch = [] # 一つのcontourのパッチ座標保存用
+        segmap_patch = [] # 一つのcontourのsegmap保存用
+        def get_dataset_coord_segmap(name, obj):
+            '''
+            パッチ座標の読み込み。以下の階層にdatasetがある。
+            /target/contourxx/patchxx/coord
+            /target/contourxx/patchxx/segmap
+            '''
+            if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'coord'):
+                #print(obj.name)
+                coords_patch.append(obj[:])
+            if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'segmap'):
+                #print(obj.name)
+                segmap_patch.append(obj.ref) # ref
+        grp_cont.visititems(get_dataset_coord_segmap)
+        coords_all_patch.extend(coords_patch)
+        segmap_all_patch.extend(segmap_patch)
+
+        coords_contour = file[f'{target}/{cont}/coords_contour']
+        coords_all_contour.setdefault(i, coords_contour)
+
+    target_level = file[target].attrs.get('patch_level')
+    dset = segmap_all_patch
+    coords = coords_all_patch # coord at level0
+    downscale = 2**target_level
+    coords_seg_level = [(coord / downscale).astype(np.int32) for coord in coords] # rescale
+    patch_size_seg = file[segmap_all_patch[0]].shape[:2]
+
+    w, h = wsi.level_dimensions[target_level] # image size at 'heatmap level' for calculating TPS. (Not level0 nor patch level)
+    canvas = Image.new(size=(w,h), mode="RGB", color=(0,0,0))
+    canvas = np.array(canvas)
+    print('downscaled size for calculating TPS: {} x {}'.format(w, h))
+ 
+    segmap = DrawMap(canvas, dset, coords_seg_level, patch_size_seg, indices=None, draw_grid=False, file=file)
+
+
+
+#    #TODO
+    target_level_seg = target_level
+    target = 'detection'
+    target_level = file[target].attrs.get('patch_level')
+    patch_downsample = int(wsi.level_downsamples[target_level])
+#    ref_patch_size = (patch_size_detection*patch_downsample[0], patch_size_detection*patch_downsample[1])
+    patch_downsample_seg = int(wsi.level_downsamples[target_level_seg])
+    scale_ratio = 2**(target_level_seg-target_level)
+
+#    dset = segmap_all_patch
+    #TODO detection_loc, tc_positive_indicesの取得と、seg_levelへのrescale
+#    patch_size_detection = file[target].attrs['patch_size']
+#    patch_downsample = (int(wsi.level_downsamples[target_level][0]), int(wsi.level_downsamples[target_level][1]))
+#    ref_patch_size = (patch_size_detection*patch_downsample[0], patch_size_detection*patch_downsample[1])
+    grp_target = file[target]
+
+    # 全contourの情報を取得
+    coords_all_patch = [] # 全てのcontourのパッチ座標保存用
+    detection_loc_all_patch = [] # 全てのcontourのsegmap保存用
+    detection_indices_all_patch = [] # 全てのcontourのsegmap保存用
+
+    for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
+        grp_cont = file[f'{target}/{cont}']
+
+        coords_patch = [] # 一つのcontourのパッチ座標保存用
+        detection_loc_patch = [] # 一つのcontourのsegmap保存用
+        detection_indices_patch = [] # 一つのcontourのsegmap保存用
+        def get_dataset_coord_detection_loc(name, obj):
+            '''
+            パッチ座標の読み込み。以下の階層にdatasetがある。
+            /target/contourxx/patchxx/coord
+            /target/contourxx/patchxx/detection_loc
+            '''
+            if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'coord'):
+                #print(obj.name)
+                coords_patch.append(obj[:])
+            if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'detection_loc'):
+                #print(obj.name)
+                detection_loc_patch.append(obj[:])
+            if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'detection_tc_positive_indices'):
+                #print(obj.name)
+                detection_indices_patch.append(obj[:])
+        grp_cont.visititems(get_dataset_coord_detection_loc)
+        coords_all_patch.extend(coords_patch)
+        detection_loc_all_patch.extend(detection_loc_patch)
+        detection_indices_all_patch.extend(detection_indices_patch)
+
+    detection_loc_all_patch_transformed = []
+    for coord, detection_loc in zip(coords_all_patch, detection_loc_all_patch):
+        detection_loc = coord + detection_loc * patch_downsample  # level0での絶対座標に変換. coordはlevel0でのtopleft
+        detection_loc_all_patch_transformed.append(detection_loc)
+    
+    #TODO
+    # segmap をindex colorで保存しておいて、rgbに変換するのは、vis levelのとき。TPS算出時は1chのインデクスだけあればいい
+    # tmp
+    # seg levelでの絶対座標に変換
+    detection_loc_all_patch_transformed_seg_level = [ (loc/patch_downsample_seg).astype(np.int32) for loc in detection_loc_all_patch_transformed]
+    tmp = [(loc/2).astype(np.int32) for loc in detection_loc_all_patch_transformed_seg_level]
+    tmp_img = cv2.resize(np.array(segmap), (int(segmap.size[0]/2), int(segmap.size[1]/2)))
+    overlay = utils.paint_circles(img=tmp_img, points=np.unique(np.vstack(tmp)[:, [1,0]], axis=0), color='cyan', crosshair=True, markerSize=1)
+    # tc+
+    tc_positives = [ detection_loc_all_patch_transformed_seg_level[i][detection_indices_all_patch[i][:].tolist()] for i in range(len(detection_loc_all_patch_transformed_seg_level)) ]
+    pos = [(loc/2).astype(np.int32) for loc in tc_positives]
+    overlay = utils.paint_circles(img=overlay, points=np.unique(np.vstack(pos)[:, [1,0]], axis=0), color='pink', crosshair=True, markerSize=1)
+    cv2.imwrite("tmp_.jpg", overlay[:,:,::-1])
+    import pdb;pdb.set_trace()
+ 
+
+#    # target levelに座標変換してdetection_locを読み込む
+#    top_left_level0 = patches_detection_level0
+#    detection_loc_level0 = detection_loc_patch_level + top_left_level0 # affine transform
+#    detection_loc_level0_tc_positive_indices = 
+#    detection_loc_seg_level = detection_loc_level0 * ratio
+#    heatmap = mat(index=detection_loc_seg_level, tc_index=detection_loc_level0_tc_positive_indices) # make index color map 0:bkground, 1: tc(-) 2:tc(+)
+#    contour_mask = 
+#    TPS_contuor_wo_segmap = heatmap * contour_mask
+#
+#
+#    # target levelに座標変換してsegmapを読み込む
+#    segmap = file[target]
+#
+#    # coords_all_contour をloopして、contourごとにバイナリマップを作成し、上記の二つのマップをマスクして、対象のcontourのTPSを算出する(segmapでのrefineあり/なし)
+#    TPS_contuor_with_segmap = segmap * heatmap * contour_mask
+
+    # 同様にsummary用に全contourのバイナリマップからTPS算出
+
+#    # create heatmap
+#    heatmap = stitch_coords(all_coords_patch, patch_size, target, coords_all_contour)
+#
+#    # save
+#    save_path = os.path.join(save_dir, f'{wsi_object.name}_{target}_all.jpg')
+#    heatmap.save(save_path)
+
+
+
+
+    file.close()
+
+    return heatmap, target_level

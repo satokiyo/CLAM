@@ -1,6 +1,6 @@
 # internal imports
 from wsi_core.WholeSlideImage import WholeSlideImage
-from wsi_core.wsi_utils import StitchCoords, StitchPatches, StitchPoints, StitchSegMap
+from wsi_core.wsi_utils import StitchCoords, StitchPatches, calculate_TPS
 from wsi_core.batch_process_utils import initialize_df
 # other imports
 import os
@@ -262,7 +262,6 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
 
 
         # forward detection model.
-        #TODO
         detection_time_elapsed = -1
         detection=True
         if detection:
@@ -274,17 +273,12 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                 # detect nuclei
                 file_path = forward_detection(file_path, WSI_object, patch_size, model_path=model_path_detection) # forward using trained model and save info to .h5 file.
 
-                # determine TC+
+                # detect TC(+)
                 file_path = detect_tc_positive_nuclei(file_path, WSI_object, intensity_thres=intensity_thres, area_thres=area_thres, radius=radius) 
 
-                # Stitch
-#                heatmap = StitchPoints(file_path, WSI_object, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
-
-#                detect_path = os.path.join(stitch_save_dir, slide_id+'_detect.jpg')
-#                heatmap.save(detect_path)
                 detection_time_elapsed = time.time() - start
 
-                
+        # forward segmentation model.
         segmentation_time_elapsed = -1
         segmentation=True
         if segmentation:
@@ -294,15 +288,27 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                 from forward.forward import forward_segmentation
 
                 # segmentation
-                file_path = forward_segmentation(file_path, WSI_object, model_path=model_path_segmentation) # forward using trained model and save info to .h5 file.
+                file_path = forward_segmentation(file_path, WSI_object, patch_size, model_path=model_path_segmentation) # forward using trained model and save info to .h5 file.
 
-                # Stitch
-#                heatmap = StitchSegMap(file_path, WSI_object, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
-#
-#                segmentation_path = os.path.join(stitch_save_dir, slide_id+'_segmentation.jpg')
-#                heatmap.save(segmentation_path)
-#                segmentation_time_elapsed = time.time() - start
+                segmentation_time_elapsed = time.time() - start
 
+
+        # TPS算出
+        calc_tps_time_elapsed = -1
+        if True:
+            file_path = os.path.join(patch_save_dir, slide_id+'.h5') # add new attr to patched .h5 file.
+            if os.path.isfile(file_path):
+                start = time.time()
+ 
+                # calculate TPS
+                heatmap, heatmap_level = calculate_TPS(file_path, WSI_object)
+
+                calc_tps_time_elapsed = time.time() - start
+
+        # 視覚化用にヒートマップをリサイズする
+        downscale=16
+        #heatmap_level = max(WSI_object.level_downsamples(patch_level_detection), WSI_object.level_downsamples(patch_level_segmentation)) # downscaleが大きい方のレベルでheatmapが作成されている
+        heatmap_vis_level = resize_to_vislevel(heatmap, level_from=heatmap_level, level_to=downsample)
 
         # save stitching heatmap of patches
         stitch_time_elapsed = -1
@@ -314,15 +320,16 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                 # Patch and save in WSI_object.hdf5_file
  
                 # Stitch
-                StitchCoords(file_path, WSI_object, stitch_save_dir, downscale=8, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True) # heatmap for each contour
-
+                StitchCoords(file_path, WSI_object, stitch_save_dir, downscale=downscale, bg_color=(0,0,0), alpha=-1,
+                             draw_grid=True, draw_contour=True, overlaymap=heatmap_vis_level) 
 
 
         print("segmentation took {} seconds".format(seg_time_elapsed))
         print("patching took {} seconds".format(patch_time_elapsed))
-        print("stitching took {} seconds".format(stitch_time_elapsed))
         print("detection took {} seconds".format(detection_time_elapsed))
         print("segmentation took {} seconds".format(segmentation_time_elapsed))
+        print("calculate TPS took {} seconds".format(calc_tps_time_elapsed))
+        print("stitching took {} seconds".format(stitch_time_elapsed))
         df.loc[idx, 'status'] = 'processed'
 
         seg_times += seg_time_elapsed

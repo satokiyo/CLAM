@@ -213,7 +213,7 @@ def threshold(array, tau):
     return mask, tau
 
 
-def paint_circles(img, points, color='red', crosshair=False):
+def paint_circles(img, points, color='red', crosshair=False, markerSize=10):
     """
     Paint points as circles on top of an image.
 
@@ -232,6 +232,10 @@ def paint_circles(img, points, color='red', crosshair=False):
     if color == 'red':
         color = [255, 0, 0]
         #color = [0, 0, 255] # BGR
+    elif color == 'pink':
+        color = [255, 50, 255]
+    elif color == 'cyan':
+        color = [0, 255, 255]
     elif color == 'white':
         color = [255, 255, 255]
     else:
@@ -247,7 +251,7 @@ def paint_circles(img, points, color='red', crosshair=False):
         for y, x in points:
             img = cv2.drawMarker(img.copy(),
                                  (x, y),
-                                 color, cv2.MARKER_TILTED_CROSS, markerSize=10)
+                                 color, cv2.MARKER_TILTED_CROSS, markerSize=markerSize)
                                  #color, cv2.MARKER_TILTED_CROSS, 7, 1, cv2.LINE_AA)
     #img = np.moveaxis(img, 2, 0)
 

@@ -582,6 +582,12 @@ class WholeSlideImage(object):
             else:
                 grp = create_hdf5_group(f, target)
 
+            # targetのpatch_level or patch_sizeが変更された場合、保存されているパッチ情報を全てリセットして再処理
+            if grp.attrs:
+                if (patch_level[target] != grp.attrs.get('patch_level')) or (patch_size != grp.attrs.get('patch_size')):
+                    grp.clear()
+                    grp.attrs.clear()
+
             # attrs at /target
             attr = {'patch_size' :            patch_size, # patch_size. Not patch size in reference frame(level 0)
                     'patch_level' :           patch_level[target], # patch_level. Not ref level(level 0)
@@ -614,7 +620,7 @@ class WholeSlideImage(object):
                     # TODO
                     pass
     
-        debug=True
+        debug=False
         if debug:
             def print_dataset(name, obj):
                 if isinstance(obj, h5py.Dataset):
