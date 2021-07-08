@@ -19,8 +19,7 @@ from PIL import Image
 
 class Config():
     device: int = 0
-    gpu: int = 0
-#    gpu: int = 1
+    gpu: int = 1
     input_size: int = 1024
     crop_size: int = 1024
     encoder_name: str = 'se_resnext50_32x4d'
@@ -30,12 +29,11 @@ class Config():
     downsample_ratio: int = 1
     deep_supervision: int = 1
     use_ssl: int = 1
-    save: bool = False
+    save: bool = True
 
 class SegConfig():
     device: int = 0
-    gpu: int = 0
-#    gpu: int = 1
+    gpu: int = 1
     input_size: int = 1024
     crop_size: int = 1024
     encoder_name: str = 'se_resnext50_32x4d'
@@ -231,13 +229,14 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
             vis_img = outputs[0].detach().cpu().numpy()
 #            create_hdf5_dataset(f[grp_name_parent[0]], dset_name=dset_name, data=vis_img)
 
+            # normalize density map values from 0 to 1, then map it to 0-255.
+            vis_img = (vis_img - np.min(vis_img)) / np.ptp(vis_img)
+            vis_img = (vis_img*255).astype(np.uint8)
+            vis_map = np.argmax(vis_img, axis=0)
+            create_hdf5_dataset(f[grp_name_parent[0]], dset_name=dset_name, data=vis_map)
             # save image
             if save_dir:
                 PALETTE = conf.palette
-                # normalize density map values from 0 to 1, then map it to 0-255.
-                vis_img = (vis_img - np.min(vis_img)) / np.ptp(vis_img)
-                vis_img = (vis_img*255).astype(np.uint8)
-                vis_map = np.argmax(vis_img, axis=0)
                 vis_map = Image.fromarray(vis_map.astype(np.uint8), mode="P")
                 vis_map.putpalette(PALETTE)
                 org_img = inputs[0].detach().cpu().numpy().transpose(1,2,0)
@@ -248,7 +247,7 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
                 if (vis_map.size) != (org_img.shape[:1]):
                     vis_map = vis_map.resize(org_img.shape[:2])
                 vis_map = np.array(vis_map.convert("RGB"))
-                create_hdf5_dataset(f[grp_name_parent[0]], dset_name=dset_name, data=vis_map)
+#                create_hdf5_dataset(f[grp_name_parent[0]], dset_name=dset_name, data=vis_map)
      
                 # overlay
                 overlay = np.uint8((org_img/2) + (vis_map/2))#.transpose(2,0,1)

@@ -274,7 +274,6 @@ class WholeSlideImage(object):
         if close > 0:
             kernel = np.ones((close, close), np.uint8)
             img_bin = cv2.morphologyEx(img_bin, cv2.MORPH_CLOSE, kernel)                 
-            cv2.imwrite("tmp.jpg", img_bin)
 
         scale = self.level_downsamples[seg_level]
         scaled_ref_patch_area = int(ref_patch_size**2 / (scale[0] * scale[1]))

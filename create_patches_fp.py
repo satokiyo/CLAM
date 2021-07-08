@@ -9,6 +9,8 @@ import time
 import argparse
 import pdb
 import pandas as pd
+from PIL import Image
+import cv2
 
 #def stitching(file_path, wsi_object, downscale = 64):
 #    start = time.time()
@@ -301,14 +303,29 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                 start = time.time()
  
                 # calculate TPS
-                heatmap, heatmap_level = calculate_TPS(file_path, WSI_object)
+                heatmap, heatmap_level, all_locs, tc_positive_locs = calculate_TPS(file_path, WSI_object)
 
                 calc_tps_time_elapsed = time.time() - start
 
         # 視覚化用にヒートマップをリサイズする
-        downscale=16
-        #heatmap_level = max(WSI_object.level_downsamples(patch_level_detection), WSI_object.level_downsamples(patch_level_segmentation)) # downscaleが大きい方のレベルでheatmapが作成されている
-        heatmap_vis_level = resize_to_vislevel(heatmap, level_from=heatmap_level, level_to=downsample)
+        downscale=8
+        wsi = WSI_object.getOpenSlide()
+        vis_level = wsi.get_best_level_for_downsample(downscale)
+
+        #TODO slow -> opencv is much faster
+        def resize_to_vis_level(img, level_from, level_to):
+            assert level_from <= level_to
+            w, h = wsi.level_dimensions[level_to]
+            return Image.fromarray(cv2.resize(np.array(img), (w,h)))
+            #return img.resize((w,h))
+        heatmap_vis_level = resize_to_vis_level(heatmap, level_from=heatmap_level, level_to=vis_level)
+
+        def rescale_to_vis_level(locs, level_from, level_to):
+            assert level_from <= level_to
+            locs = [loc / 2**(level_to-level_from) for loc in locs]
+            return locs
+        all_locs = rescale_to_vis_level(all_locs, level_from=heatmap_level, level_to=vis_level)
+        tc_positive_locs = rescale_to_vis_level(tc_positive_locs, level_from=heatmap_level, level_to=vis_level)
 
         # save stitching heatmap of patches
         stitch_time_elapsed = -1
@@ -321,7 +338,7 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
  
                 # Stitch
                 StitchCoords(file_path, WSI_object, stitch_save_dir, downscale=downscale, bg_color=(0,0,0), alpha=-1,
-                             draw_grid=True, draw_contour=True, overlaymap=heatmap_vis_level) 
+                             draw_grid=True, draw_contour=True, overlaymap=heatmap_vis_level, all_locs=all_locs, tc_positive_locs=tc_positive_locs) 
 
 
         print("segmentation took {} seconds".format(seg_time_elapsed))
@@ -455,4 +472,26 @@ if __name__ == '__main__':
                                             radius=args.radius)
 
 # TODO
+# overlayの時間短縮(paint_circle)
+# 無駄な処理しているところないか
 # hdf5 fileからROIをjpgにして保存する機能
+# pyspark
+# hdf5 viewerをインストール
+# c++移行
+# gui
+# makefile
+# docker compose?
+# sidecar container?
+# hole 対応
+# 囲みが閉じてない場合でも大丈夫か?
+# patch 取得のルーチン化
+# contourをはみ出たものも描画・カウントされている?
+# mapのoverlayが囲みからはみ出ているのを直す
+# overlap strategy
+# np.vstackで0の配列はエラーになる
+# calculate TPSでもっとfasterなアルゴリズム -> dataframeにしてベクトル演算?
+# github copilot
+# 丸めの問題　np.ceil を使っているところ。少数をintにキャストした時の座標の問題確認
+# contourの番号を描いてから点を上書きしているので汚い
+# TODO slow　の箇所
+# pil -> cv (resize fast)
