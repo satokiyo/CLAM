@@ -102,6 +102,7 @@ class Whole_Slide_Bag_FP(Dataset):
         target_patch_size=-1,
         target=None,
         detection_loc=False,
+        skip_flag=False,
         ):
         """
         Args:
@@ -112,11 +113,17 @@ class Whole_Slide_Bag_FP(Dataset):
             target_patch_size (int): Custom defined image size before embedding
             target (str): detection or segmentation
             detection_loc (bool): Return detection_loc dataset additionally. detection_loc dataset must exists. i.e. detection forward must be completed.
+            skip_flag (bool): Whether thresholds have been changed or not. If True(=all unchanged), skip
+        Returns:
+            img, coord, grp_name_parent
+            img, coord, grp_name_parent, detection_loc
+            None
         """
         self.pretrained=pretrained
         self.wsi = wsi
         self.target = target
         self.file_path = file_path
+        self.skip_flag = skip_flag
         if not custom_transforms:
             self.roi_transforms = eval_transforms(pretrained=pretrained)
         else:
@@ -182,15 +189,29 @@ class Whole_Slide_Bag_FP(Dataset):
 
     def __getitem__(self, idx):
         grp_name_parent, coord = self.coords_patches[idx]
+        if self.detection_loc_patches:
+            _grp_name_parent, detection_loc = self.detection_loc_patches[idx]
+            assert grp_name_parent == _grp_name_parent # datasets coord and detection_loc is under the same directory hierarchy.
+            # 閾値が一つも変更されていない場合、かつ既に結果があるパッチは飛ばす
+            if self.skip_flag:
+                with h5py.File(self.file_path, "r") as f:
+                    if ('detection_dab_intensity' in f[grp_name_parent]) and ('detection_tc_positive_indices' in f[grp_name_parent]):
+                        return 0
+
+            img = self.wsi.read_region(coord, self.patch_level, (self.patch_size, self.patch_size)).convert('RGB')
+    
+            if self.target_patch_size is not None:
+                img = img.resize(self.target_patch_size)
+            img = self.roi_transforms(img)#.unsqueeze(0)
+
+            return img, coord, grp_name_parent, detection_loc
+
         img = self.wsi.read_region(coord, self.patch_level, (self.patch_size, self.patch_size)).convert('RGB')
 
         if self.target_patch_size is not None:
             img = img.resize(self.target_patch_size)
         img = self.roi_transforms(img)#.unsqueeze(0)
-        if self.detection_loc_patches:
-            _grp_name_parent, detection_loc = self.detection_loc_patches[idx]
-            assert grp_name_parent == _grp_name_parent # datasets coord and detection_loc is under the same directory hierarchy.
-            return img, coord, grp_name_parent, detection_loc
+ 
         return img, coord, grp_name_parent
 
 

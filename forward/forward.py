@@ -66,7 +66,7 @@ def forward_detection(file_path, wsi_object, patch_size, model_path): # forward 
     conf = Config()
     conf.input_size=patch_size
     conf.crop_size=patch_size
-    if conf.gpu:
+    if conf.gpu and torch.cuda.is_available():
         os.environ['CUDA_VISIBLE_DEVICES'] = str(conf.device)  # set vis gpu
         device = torch.device(conf.device)
     else:
@@ -83,7 +83,7 @@ def forward_detection(file_path, wsi_object, patch_size, model_path): # forward 
     dataloader = torch.utils.data.DataLoader(dataset,
                                                batch_size=1,
                                                shuffle=False,
-                                               num_workers=4,
+                                               num_workers=8,
                                                pin_memory=True if conf.gpu==1 else False)
 
     dset_name = 'detection_loc'
@@ -94,7 +94,7 @@ def forward_detection(file_path, wsi_object, patch_size, model_path): # forward 
         ten_percent_chunk = math.ceil(total * 0.1)
 
     if conf.save: # save ROI overlay images
-        save_dir = Path(file_path).parent.parent / 'detection'
+        save_dir = Path(file_path).parent.parent / 'detection' / f.attrs.get('name')
         if not save_dir.exists():
             save_dir.mkdir(parents=True)
     else:
@@ -173,7 +173,7 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
     conf = SegConfig()
     conf.input_size=patch_size
     conf.crop_size=patch_size
-    if conf.gpu:
+    if conf.gpu and torch.cuda.is_available():
         os.environ['CUDA_VISIBLE_DEVICES'] = str(conf.device)  # set vis gpu
         device = torch.device(conf.device)
     else:
@@ -190,7 +190,7 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
     dataloader = torch.utils.data.DataLoader(dataset,
                                                batch_size=1,
                                                shuffle=False,
-                                               num_workers=4,
+                                               num_workers=8,
                                                pin_memory=True if conf.gpu==1 else False)
 
     dset_name = 'segmap'
@@ -201,7 +201,7 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
         ten_percent_chunk = math.ceil(total * 0.1)
 
     if conf.save: # save ROI overlay images
-        save_dir = Path(file_path).parent.parent / 'segmentation'
+        save_dir = Path(file_path).parent.parent / 'segmentation' / f.attrs.get('name')
         if not save_dir.exists():
             save_dir.mkdir(parents=True)
     else:
@@ -227,7 +227,6 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
 
             # save segmentation map as dataset
             vis_img = outputs[0].detach().cpu().numpy()
-#            create_hdf5_dataset(f[grp_name_parent[0]], dset_name=dset_name, data=vis_img)
 
             # normalize density map values from 0 to 1, then map it to 0-255.
             vis_img = (vis_img - np.min(vis_img)) / np.ptp(vis_img)
@@ -247,10 +246,9 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
                 if (vis_map.size) != (org_img.shape[:1]):
                     vis_map = vis_map.resize(org_img.shape[:2])
                 vis_map = np.array(vis_map.convert("RGB"))
-#                create_hdf5_dataset(f[grp_name_parent[0]], dset_name=dset_name, data=vis_map)
      
                 # overlay
-                overlay = np.uint8((org_img/2) + (vis_map/2))#.transpose(2,0,1)
+                overlay = np.uint8((org_img/2) + (vis_map/2))
 
                 # save
                 coord = coord[0].detach().cpu().numpy()
@@ -343,30 +341,14 @@ def detect_tc_positive_nuclei(file_path, wsi_object, intensity_thres=175, area_t
     file_pathのHDF5ファイルの各パッチをイテレートし、TC(+)の結果が無かった場合だけ処理を実行し、該当のpatchのhdf5 groupに新たなdatasetを追加する
     もしくは結果はあるが、閾値が変更された場合に、既にある結果計算時の閾値が違うpatchに対してのみ処理を実行し、datasetの値を更新する
 
-    file_pathからHDF5ファイルを読み込み、/detection以下の階層から各パッチの座標、detection結果を元にしたのTC(+)の計算は完了しているか等の情報を参照する。
+    file_pathからHDF5ファイルを読み込み、/detection以下の階層から各パッチの座標、detection結果を元にしたTC(+)の計算は完了しているか等の情報を参照する。
     TC(+)の結果がないパッチのみ処理し、結果をdatasetとして/detection/contourxx/patchxx/detection_dab_intensity および /detection/contourxx/patchxx/detection_tc_positive_indices以下に追加する
 
     Return:
       file_path
     '''
 
-    dataset = Whole_Slide_Bag_FP(file_path, wsi_object.getOpenSlide(), 
-                                   pretrained=False, custom_transforms=False, custom_downsample=1, target_patch_size=-1,
-                                   target='detection', detection_loc=True) # detection_loc=True returns detected nuclei locations
-    total = len(dataset)
-    slide_id = dataset.slide_id
-    dataloader = torch.utils.data.DataLoader(dataset,
-                                               batch_size=1,
-                                               shuffle=False,
-                                               num_workers=4,
-                                               pin_memory=False)
-    conf = Config()
-    if conf.save: # save ROI overlay images
-        save_dir = Path(file_path).parent.parent / 'detection'
-        if not save_dir.exists():
-            save_dir.mkdir(parents=True)
-    else:
-        save_dir = None
+    f = open_hdf5_file(file_path, mode='a')
 
     attr_dict = {
                    'intensity_thres' : intensity_thres,
@@ -374,35 +356,68 @@ def detect_tc_positive_nuclei(file_path, wsi_object, intensity_thres=175, area_t
                    'radius'          : radius,
                  }
 
-    f = open_hdf5_file(file_path, mode='a')
 
     # 閾値のattrがない場合(一回目の処理)、attrに設定する
+    count = 0
     for attr_name, thres in attr_dict.items():
-        if not attr_name in f['/detection'].attrs:
+        if not attr_name in f['/detection'].attrs:                  # 一回目
             create_hdf5_attrs(f['/detection'], attr_name, thres)
+        else:                                                       # 一回目以外：既にattrがあり変更されていない
+            if f['/detection'].attrs.get(attr_name) == attr_dict[attr_name]:
+                count+=1
+    if count == len(attr_dict.keys()): # 閾値が一つも変更されていない
+        skip_flag=True
+    else:
+        skip_flag=False
+
+
+    dataset = Whole_Slide_Bag_FP(file_path, wsi_object.getOpenSlide(), 
+                                   pretrained=False, custom_transforms=False, custom_downsample=1, target_patch_size=-1,
+                                   target='detection', detection_loc=True, skip_flag=skip_flag) # detection_loc=True returns detected nuclei locations
+    total = len(dataset)
+    slide_id = dataset.slide_id
+    dataloader = torch.utils.data.DataLoader(dataset,
+                                               batch_size=1,
+                                               shuffle=False,
+                                               num_workers=8,
+                                               pin_memory=False)
+
+    conf = Config()
+    if conf.save: # save ROI overlay images
+        save_dir = Path(file_path).parent.parent / 'detection' / f.attrs.get('name')
+        if not save_dir.exists():
+            save_dir.mkdir(parents=True)
+    else:
+        save_dir = None
 
     verbose=1
     if verbose > 0:
         ten_percent_chunk = math.ceil(total * 0.1)
 
-    for patch_id, (patch, coord, grp_name_parent, detection_loc) in enumerate(dataloader):
-        verbose = 1
+    #for patch_id, (patch, coord, grp_name_parent, detection_loc) in enumerate(dataloader):
+    for patch_id, (data) in enumerate(dataloader):
         if verbose > 0:
             if patch_id % ten_percent_chunk == 0:
                 print('progress: {}/{} TC(+)count finished'.format(patch_id, total))
-
-        coord = coord[0].detach().cpu().numpy()
-        detection_locs = np.array(detection_loc)[:]
-
-        # 核の検出数が0だったパッチは処理しない
-        if (len(detection_locs)==1) and (np.all(detection_loc[0] == np.uint32(-1))): # 核の数が0だった場合、np.array([-1, -1], dtype=np.uint32)が入っている
+        if data:
+            patch, coord, grp_name_parent, detection_loc = data
+        else: # 閾値が一つも変更されていない場合、かつ既に結果があるパッチは0が返ってくる
             continue
 
-        # 閾値が変更されていない場合、かつ既に結果があるパッチは飛ばす
-        if (intensity_thres == f['/detection'].attrs.get('intensity_thres')) and (area_thres == f['/detection'].attrs.get('area_thres')) and (radius == f['/detection'].attrs.get('radius')):
-            if ('detection_dab_intensity' in f[grp_name_parent[0]]) and ('detection_tc_positive_indices' in f[grp_name_parent[0]]):
-                continue
+#        # 閾値が一つも変更されていない場合、かつ既に結果があるパッチは飛ばす
+#        if skip_flag > 0:
+#            if ('detection_dab_intensity' in f[grp_name_parent[0]]) and ('detection_tc_positive_indices' in f[grp_name_parent[0]]):
+#                 continue
 
+        # 核の検出数が0だったパッチは処理しない
+        detection_locs = np.array(detection_loc)[:]
+        if (len(detection_locs)==1) and (np.all(detection_loc[0] == np.uint32(-1))): # 核の数が0だった場合、np.array([-1, -1], dtype=np.uint32)が入っている
+            img = patch.to('cpu').numpy().squeeze(0).transpose(1,2,0)
+            create_hdf5_dataset(f[grp_name_parent[0]], dset_name='detection_dab_intensity', data=np.zeros((img.shape[:2])).astype(np.uint8))
+            create_hdf5_dataset(f[grp_name_parent[0]], dset_name='detection_tc_positive_indices', data=np.array([]))
+            continue
+
+        coord = coord[0].detach().cpu().numpy()
         with torch.set_grad_enabled(False):
             img = patch.to('cpu').numpy().squeeze(0).transpose(1,2,0)
             img = (img - np.min(img)) / np.ptp(img)

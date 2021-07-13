@@ -11,7 +11,7 @@ import openslide
 from PIL import Image
 import h5py
 import math
-from wsi_core.wsi_utils import savePatchIter_bag_hdf5, initialize_hdf5_bag, coord_generator, save_hdf5, sample_indices, screen_coords, isBlackPatch, isWhitePatch, to_percentiles
+from wsi_core.wsi_utils import savePatchIter_bag_hdf5, initialize_hdf5_bag, coord_generator, save_hdf5, sample_indices, screen_coords, isBlackPatch, isWhitePatch, to_percentiles, HDFVisitor
 import itertools
 from wsi_core.util_classes import isInContourV1, isInContourV2, isInContourV3_Easy, isInContourV3_Hard, isInContourV3_Easy_5pt, Contour_Checking_fn
 from utils.file_utils import load_pkl, save_pkl
@@ -19,6 +19,7 @@ from wsi_core.preprocessing import create_tile_generator, get_20x_zoom_level, pr
 Image.MAX_IMAGE_PIXELS = 933120000
 from pathlib import Path
 from utils.file_utils import create_hdf5_group, create_hdf5_dataset, create_hdf5_attrs, open_hdf5_file
+import re
 
 import pdb
 
@@ -254,18 +255,17 @@ class WholeSlideImage(object):
         img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA)
         img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)  # Convert to HSV space
         #img_hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)  # Convert to HSV space
-#        img_med = cv2.medianBlur(img_hsv[:,:,1], mthresh)  # Apply median blurring # 中央値フィルタを入れると、肺胞壁の薄いところがつぶれてしまう
-        img_med = img_hsv[:,:,1]  # Apply median blurring
+        #img_med = cv2.medianBlur(img_hsv[:,:,1], mthresh)  # Apply median blurring # 中央値フィルタを入れると、肺胞壁の薄いところがつぶれてしまう
+        img_med = img_hsv[:,:,1]
         
        
         # Thresholding
         if use_otsu:
             img_gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
-            img_med[img_gray[:,:]<65] = 0 # remove black 5> in gray pixels
-            thres, _ = cv2.threshold(img_med, 0, sthresh_up, cv2.THRESH_BINARY+cv2.THRESH_OTSU) # remove black 65> in gray pixels
+            img_med[img_gray[:,:]<65] = 0 # remove black 65> in gray pixels
+            thres, _ = cv2.threshold(img_med, 0, sthresh_up, cv2.THRESH_BINARY+cv2.THRESH_OTSU) 
             img_bin = np.zeros((img_gray.shape), dtype=np.uint8)
             img_bin[img_med >= thres] = 255
-#            _, img_bin = cv2.threshold(img_med, 0, sthresh_up, cv2.THRESH_OTSU+cv2.THRESH_BINARY)
             print(f"th_otsu_sat : {thres}")
         else:
             _, img_bin = cv2.threshold(img_med, sthresh, sthresh_up, cv2.THRESH_BINARY)
@@ -364,7 +364,7 @@ class WholeSlideImage(object):
         self.contours_tissue = [self.contours_tissue[i] for i in contour_ids]
 #        self.holes_tissue = [self.holes_tissue[i] for i in contour_ids]
 
-    def visWSI(self, vis_level=0, color = (0,255,0), hole_color = (0,0,255),
+    def visWSI(self, vis_level=0, color = (0,255,0), hole_color = (255,0,0),
                     line_thickness=250, max_size=None, top_left=None, bot_right=None, custom_downsample=1, view_slide_only=False,
                     number_contours=False, seg_display=True):
         
@@ -379,8 +379,9 @@ class WholeSlideImage(object):
         else:
             top_left = (0,0)
             region_size = self.level_dim[vis_level]
-
+ 
         img = np.array(self.wsi.read_region(top_left, vis_level, region_size).convert("RGB"))
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         
         if not view_slide_only:
             offset = tuple(-(np.array(top_left) * scale).astype(int))
@@ -399,21 +400,21 @@ class WholeSlideImage(object):
                         # draw the contour and put text next to center
                         cv2.drawContours(img,  [contour], -1, color, line_thickness, lineType=cv2.LINE_8, offset=offset)
                         cv2.putText(img, "{}".format(idx), (cX, cY),
-                                cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 10)
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
 
                 for holes in self.holes_tissue:
                     cv2.drawContours(img, self.scaleContourDim(holes, scale), 
                                      -1, hole_color, line_thickness, lineType=cv2.LINE_8)
             
-        img = Image.fromarray(img)
-    
-        w, h = img.size
+        h, w = img.shape[:2]
         if custom_downsample > 1:
-            img = img.resize((int(w/custom_downsample), int(h/custom_downsample)))
+            #img = img.resize((int(w/custom_downsample), int(h/custom_downsample)))
+            img = cv2.resize(img, (int(h/custom_downsample), int(w/custom_downsample)))
 
         if max_size is not None and (w > max_size or h > max_size):
             resizeFactor = max_size/w if w > h else max_size/h
-            img = img.resize((int(w*resizeFactor), int(h*resizeFactor)))
+            #img = img.resize((int(w*resizeFactor), int(h*resizeFactor)))
+            img = cv2.resize(img, (int(h*resizeFactor), int(w*resizeFactor)))
        
         return img
 
@@ -549,7 +550,7 @@ class WholeSlideImage(object):
         
         return level_downsamples
 
-    def process_contours(self, save_path, patch_level={'detection':40, 'segmentation':10}, patch_size=256, step_size=256, **kwargs):
+    def process_contours(self, save_path, patch_level={'detection':1, 'segmentation':2}, patch_size=256, step_size=256, **kwargs):
         '''
         wsi中の全てのcontours(囲み領域)に対して処理をする
 
@@ -560,7 +561,7 @@ class WholeSlideImage(object):
         (target = detection or segmentation)
 
         以下の階層に属性情報を持つ
-        /       : name(スライド名)
+        / : name(スライド名)
         /target : patch_size, patch_level, downsample, downsampled_level_dim, level_dim
 
         '''
@@ -572,45 +573,85 @@ class WholeSlideImage(object):
 
         # group作成
         f = open_hdf5_file(save_path_hdf5, mode='a')
-        create_hdf5_attrs(f, name='name', data=self.name) # attrs at /
+        create_hdf5_attrs(f, name='name', data=self.name) # create attrs at /
 
         targets = ['detection', 'segmentation']
         for target in targets:
             if target in f.keys():
                 grp = f[target]
             else:
-                grp = create_hdf5_group(f, target)
+                grp = create_hdf5_group(f, target) # create group at /target
 
-            # targetのpatch_level or patch_sizeが変更された場合、保存されているパッチ情報を全てリセットして再処理
+            # /detection or /segmentation : patch_level or patch_size or step_sizeが変更された場合、保存されているパッチ情報を全てリセットして再処理
             if grp.attrs:
-                if (patch_level[target] != grp.attrs.get('patch_level')) or (patch_size != grp.attrs.get('patch_size')):
+                if (patch_level[target] != grp.attrs.get('patch_level')) or (patch_size != grp.attrs.get('patch_size') or (step_size != grp.attrs.get('step_size'))):
                     grp.clear()
                     grp.attrs.clear()
 
-            # attrs at /target
-            attr = {'patch_size' :            patch_size, # patch_size. Not patch size in reference frame(level 0)
-                    'patch_level' :           patch_level[target], # patch_level. Not ref level(level 0)
-                    'downsample':             self.level_downsamples[patch_level[target]],
+            # create attrs at /target
+            attr = {'patch_size'            : patch_size, # patch_size. Not patch size in reference frame(level 0)
+                    'step_size'             : step_size,  # step_size. Not ref level(level 0)
+                    'patch_level'           : patch_level[target], # patch_level. Not ref level(level 0)
+                    'downsample'            : self.level_downsamples[patch_level[target]],
                     'downsampled_level_dim' : tuple(np.array(self.level_dim[patch_level[target]])),
-                    'level_dim':              self.level_dim[patch_level[target]],}
+                    'level_dim'             : self.level_dim[patch_level[target]],}
             for name, data in attr.items():
                 create_hdf5_attrs(grp, name=name, data=data) 
 
+            cont_idx_processed = [s for s in grp] # ex: ["contour0", "contour1", "contour2"]
+            if cont_idx_processed:
+                cont_idx_offset = max([re.findall(r'\d+', s)[-1] for s in cont_idx_processed]) # ex: 2
+            else:
+                cont_idx_offset = -1
 
+
+            # dataset読み込み。以下の階層にdatasetがある。
+            queries = ['coords_contour']
+            v = HDFVisitor(*queries)
+            grp.visititems(v)
+            processed_contours = v.container['coords_contour']
+
+            def is_exist_ainb(a:list, b:list):
+                '''
+                list a の要素がlist bにも含まれる場合に、list a 該当要素のインデクスを返す 
+                '''
+                ret = []
+                for i, e1 in enumerate(a):
+                    for e2 in b:
+                        if np.all(e1 == e2):
+                            ret.append(i)
+                return ret
+
+            to_skip_list = is_exist_ainb(a=self.contours_tissue, b=processed_contours) # 完了済のcontourにも含まれるcontourは処理しない
+
+            # processed_contoursにのみあるcontourは.h5から削除(囲み修正or削除とみなす)
+            exist_both = is_exist_ainb(a=processed_contours, b=self.contours_tissue) # 両方にあるcontour
+            no_longer_exist = [idx for idx in range(len(processed_contours)) if idx not in exist_both] # processed_contoursにのみあるcontourは.h5から削除(囲み修正or削除とみなす)
+            for delete_idx in no_longer_exist:
+                to_delete = processed_contours[delete_idx]
+                for processed_cont in grp:
+                    if np.all(grp[processed_cont]['coords_contour'][:] == to_delete):
+                        grp[processed_cont].clear()
+                        del grp[processed_cont]
+
+            # contour毎に処理
+            add_idx = 0
             for idx_cont, cont in enumerate(self.contours_tissue): # contour coords at level0
-                #TODO contourを比較し、差分を確認し、新規追加または無くなったcontourについては該当groupの削除(削除しないと、この後の処理でforwardやTC(+)の完了有無のチェック時に不整合が起こる)
-                grp_cont = create_hdf5_group(grp, f'contour{idx_cont}') # /target/contourxx
-                create_hdf5_dataset(grp_cont, 'coords_contour', data=cont) # dataset at /target/contourxx/coords_contour
-    
                 if (idx_cont + 1) % fp_chunk_size == fp_chunk_size:
                     print('Processing contour {}/{}'.format(idx_cont, n_contours))
-                asset_dict, attr_dict = self.process_contour(cont, self.holes_tissue[idx_cont], patch_level[target], save_path, patch_size, step_size, **kwargs)
+
+                if idx_cont in to_skip_list:
+                    continue
+                add_idx += 1
+
+                grp_cont = create_hdf5_group(grp, f'contour{int(cont_idx_offset) + add_idx}') # /target/contourxx contourの番号は追加順に増やしていく
+                create_hdf5_dataset(grp_cont, 'coords_contour', data=cont) # dataset at /target/contourxx/coords_contour
+
+                # パッチの取得
+                asset_dict = self.process_contour(cont, self.holes_tissue[idx_cont], patch_level[target], save_path, patch_size, step_size, **kwargs)
 
                 # save attrs
                 if len(asset_dict) > 0:
-                    # save attrs for patches
-#                    for key, val in attr_dict['coords'].items(): 
-#                        create_hdf5_attrs(grp_cont, name=key, data=val) # attrs at /target/contourxx/
                     # save assets per patch
                     for idx_patch, coord in enumerate(asset_dict['coords']):
                         grp_patch = create_hdf5_group(grp_cont, f'patch{idx_patch}') # /target/contourxx/patchxx
@@ -630,31 +671,6 @@ class WholeSlideImage(object):
         f.close()
     
         self.hdf5_file = save_path_hdf5
-
-            # SAMPLE
-            # create 
-            #grp = f.create_group("/subgroup")
-            #grp.attrs.create(name="", data=)
-            #grp.attrs.get(name="")
-            #dset = f.create_dataset("mydataset", (100,), dtype='i')
-
-            ## ref
-            #ref = mygroup.ref
-            #mygroup2 = myfile[ref]
-        
-            ## region ref
-            #myds = myfile.create_dataset('dset', (200,200))
-            #regref = myds.regionref[0:10, 0:5]
-        
-            #subset = myds[regref]
-        
-            ## vlen value
-            #dt = h5py.vlen_dtype(np.dtype('int32'))
-            #dset = f.create_dataset('vlen_int', (100,), dtype=dt)
-            #dset[0] = [1,2,3]
-            #dset[1] = [1,2,3,4,5]
-            #dset[0]
-            #dset[0:2]
 
 
     def process_contour(self, cont, contour_holes, patch_level, save_path, patch_size = 256, step_size = 256,
@@ -693,7 +709,16 @@ class WholeSlideImage(object):
                 return {}, {}
             else:
                 print("Adjusted Bounding Box:", start_x, start_y, w, h)
-    
+
+        if patch_size > step_size: # overlap tile
+            offset = int(patch_size - step_size) // 2
+            ref_offset_x = offset*patch_downsample[0]
+            ref_offset_y = offset*patch_downsample[1]
+            start_x = start_x-ref_offset_x
+            start_y = start_y-ref_offset_y
+            stop_y = stop_y+ref_offset_y
+            stop_x = stop_x+ref_offset_x
+
         if isinstance(contour_fn, str):
             if contour_fn == 'four_pt':
                 cont_check_fn = isInContourV3_Easy(contour=cont, patch_size=ref_patch_size[0], center_shift=0.5)
@@ -734,21 +759,11 @@ class WholeSlideImage(object):
         print('Extracted {} coordinates'.format(len(results)))
 
         if len(results)>1:
-            asset_dict = {'coords' :          results}
-            
-            attr = {'patch_size' :            patch_size, # patch_size. Not patch size in reference frame(level 0)
-                    'patch_level' :           patch_level, # patch_level. Not ref level(level 0)
-                    'downsample':             self.level_downsamples[patch_level],
-                    'downsampled_level_dim' : tuple(np.array(self.level_dim[patch_level])),
-                    'level_dim':              self.level_dim[patch_level],
-                    'name':                   self.name,}
-                    #'save_path':              save_path}
-
-            attr_dict = { 'coords' : attr}
-            return asset_dict, attr_dict
-
+            asset_dict = {'coords' : results}
+            return asset_dict
         else:
-            return {}, {}
+            return {}
+
 
     @staticmethod
     def process_coord_candidate(coord, contour_holes, ref_patch_size, cont_check_fn):

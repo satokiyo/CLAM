@@ -35,8 +35,21 @@ def count_TC(mask, segmap, locs):
         segmap: セグメンテーション結果のマスク
         locs: 検出された核の位置座標
     '''
-    import time
-    start = time.time()
+    tc_count = 0
+    tc_count_on_segmap = 0
+    locs_inside_contour_segmap = []
+
+    for loc in locs: # loop over all tc cells
+        if mask[loc[0], loc[1]] > 0: # 囲みの中に含まれる点か?
+            tc_count+=1
+            if segmap[loc[0], loc[1]] == 2: # segmentation結果でcancer = class2の点か?
+                tc_count_on_segmap+=1
+                locs_inside_contour_segmap.append(loc)
+
+    return tc_count, tc_count_on_segmap, locs_inside_contour_segmap
+
+
+# slow
 #    mask_region = np.where(mask==255) # 注目している囲みの領域
 #    mask_region_arr = np.array([mask_region[0], mask_region[1]]).T.astype(np.int64)
 #
@@ -56,34 +69,7 @@ def count_TC(mask, segmap, locs):
 #    locs_inside_contour_segmap = np.array([x.split('_') for x in locs_inside_contour_segmap_strarr]).astype(np.int32)
 #    tc_count_on_segmap = len(locs_inside_contour_segmap)
 #
-#    elp1  = time.time() - start
 #    return tc_count, tc_count_on_segmap, locs_inside_contour_segmap
-
-# faster
-    start = time.time()
-    tc_count = 0
-    tc_count_on_segmap = 0
-    locs_inside_contour_segmap = []
-
-    for loc in locs: # loop over all tc cells
-        if mask[loc[0], loc[1]] == 255: # 囲みの中に含まれる点か?
-            tc_count+=1
-            if segmap[loc[0], loc[1]] == 2: # segmentation結果でcancer = class2の点か?
-                tc_count_on_segmap+=1
-                locs_inside_contour_segmap.append(loc)
-
-    elp2  = time.time() - start
-    return tc_count, tc_count_on_segmap, locs_inside_contour_segmap
-#        for loc in tc_positive_locs: # loop over all tc(+) cells
-#            if mask[loc[1], loc[0]] == 255: # 囲みの中に含まれる点か?
-#                tc_pos_count+=1
-#                if segmap[loc[1], loc[0]] == 2: # segmentation結果でcancer = class2の点か?
-#                    tc_pos_count_on_segmap+=1
-#                    if return_loc:
-#                        ret_tc_positive_locs.append(loc)
-#
-#        return tc_count, tc_pos_count, tc_count_on_segmap, tc_pos_count_on_segmap
-
 
 
 
@@ -268,7 +254,7 @@ def DrawMap(canvas, patch_dset, coords, patch_size, indices=None, verbose=1, dra
 
 
 #TODO slow
-def DrawMapGray(canvas, patch_dset, coords, patch_size, indices=None, verbose=1, file=None):
+def DrawMapGray(canvas, patch_dset, coords, patch_size, step_size, indices=None, verbose=1, file=None):
     if indices is None:
         indices = np.arange(len(coords))
     total = len(indices)
@@ -284,13 +270,16 @@ def DrawMapGray(canvas, patch_dset, coords, patch_size, indices=None, verbose=1,
         patch_id = indices[idx]
         patch_ref = patch_dset[patch_id]
         patch = file[patch_ref]
-        #patch = np.array(Image.fromarray(patch.astype(np.uint8), mode="P").putpalette(PALETTE).convert('RGB'))
-        #patch = cv2.resize(patch, patch_size)
         coord = coords[patch_id]
         canvas_crop_shape = canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0]].shape[:2]
-        canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0]] = patch[:canvas_crop_shape[0], :canvas_crop_shape[1]]
+        if patch_size > step_size: # overlap tile
+            offset = (int((patch_size[0] - step_size[0]) // 2), int((patch_size[0] - step_size[0]) // 2))
+            canvas_crop_shape = canvas[coord[1]:coord[1]+step_size[1], coord[0]:coord[0]+step_size[0]].shape[:2]
+            canvas[coord[1]+offset[1]:coord[1]+offset[1]+step_size[1], coord[0]+offset[0]:coord[0]+offset[0]+step_size[0]] = patch[offset[1]:offset[1]+canvas_crop_shape[0], offset[0]:offset[0]+canvas_crop_shape[1]]
+        else:
+            canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0]] = patch[:canvas_crop_shape[0], :canvas_crop_shape[1]]
 
-    return Image.fromarray(canvas)
+    return canvas
 
 
 def DrawMapFromCoords(canvas, wsi_object, coords, patch_size, vis_level, indices=None, verbose=1, draw_grid=True):
@@ -310,20 +299,22 @@ def DrawMapFromCoords(canvas, wsi_object, coords, patch_size, vis_level, indices
     patch_size = tuple(np.ceil((np.array(patch_size)/np.array(downsamples))).astype(np.int32)) # convert patch_size from level 0 to vis_level.
     print('downscaled patch size: {}x{}'.format(patch_size[0], patch_size[1]))
     
+    canvas_size = canvas.shape[:2]
+    canvas[:,:,:] = np.array(wsi_object.wsi.read_region((0,0), vis_level, (canvas_size[1], canvas_size[0])).convert("RGB")) # coord is the location (x, y) tuple giving the top left pixel in the level 0 reference frame
     for patch_id in range(total):
         if verbose > 0:
             if patch_id % ten_percent_chunk == 0:
                 print('progress: {}/{} stitched'.format(patch_id, total))
         
         coord = coords[patch_id] # coord at level0
-        patch = np.array(wsi_object.wsi.read_region(tuple(coord), vis_level, patch_size).convert("RGB")) # coord is the location (x, y) tuple giving the top left pixel in the level 0 reference frame
+        #patch = np.array(wsi_object.wsi.read_region(tuple(coord), vis_level, patch_size).convert("RGB")) # coord is the location (x, y) tuple giving the top left pixel in the level 0 reference frame
         coord = np.ceil(coord / downsamples).astype(np.int32) # convert coord for vis_level
-        canvas_crop_shape = canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3].shape[:2]
-        canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3] = patch[:canvas_crop_shape[0], :canvas_crop_shape[1], :]
+        #canvas_crop_shape = canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3].shape[:2]
+        #canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0], :3] = patch[:canvas_crop_shape[0], :canvas_crop_shape[1], :]
         if draw_grid:
             DrawGrid(canvas, coord, patch_size)
 
-    return Image.fromarray(canvas)
+    return canvas
 
 
 def StitchPatches(hdf5_file_path, downscale=16, draw_grid=False, bg_color=(0,0,0), alpha=-1):
@@ -367,82 +358,6 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
         all_locs  : coordinates of detected nuclei location at vis_level
         tc_positive_locs  : coordinates of detected DAB(+) nuclei location at vis_level
     '''
-    def stitch_coords(coords_patch, patch_size, target, coords_contours):
-        '''
-        処理の共通部分のクロージャ
-        '''
-        if w*h > Image.MAX_IMAGE_PIXELS: 
-            raise Image.DecompressionBombError("Visualization Downscale %d is too large" % downscale)
-        
-        if alpha < 0 or alpha == -1:
-            heatmap = Image.new(size=(w,h), mode="RGB", color=bg_color)
-        else:
-            heatmap = Image.new(size=(w,h), mode="RGBA", color=bg_color + (int(255 * alpha),))
-    
-        heatmap = np.array(heatmap)
-    
-        DrawMapFromCoords(heatmap, wsi_object, coords_patch, patch_size, vis_level, indices=None, draw_grid=draw_grid)
-    
-        if draw_contour:
-            color = (0,255,0)
-            hole_color = (0,0,255)
-            line_thickness=2
-            number_contours = True
-            downsample = wsi_object.level_downsamples[vis_level] # image size at 'heatmap level' for stitching. (Not level0 nor patch level)
-            scale = [1/downsample[0], 1/downsample[1]]
-            top_left = (0,0)
-            offset = tuple(-(np.array(top_left) * scale).astype(int))
-    
-            #coords_contour = file[f'{target}/{cont}/coords_contour']
-    
-            for i, coords_contour in coords_contours.items():
-                if not number_contours:
-                    cv2.drawContours(heatmap, wsi_object.scaleContourDim(coords_contour, scale), 
-                                     -1, color, line_thickness, lineType=cv2.LINE_8, offset=offset)
-        
-                else: # add numbering to each contour
-                    contour = np.array(wsi_object.scaleContourDim(coords_contour, scale))
-                    M = cv2.moments(contour)
-                    cX = int(M["m10"] / (M["m00"] + 1e-9))
-                    cY = int(M["m01"] / (M["m00"] + 1e-9))
-                    # draw the contour and put text next to center
-                    cv2.drawContours(heatmap,  [contour], -1, color, line_thickness, lineType=cv2.LINE_8, offset=offset)
-                    cv2.putText(heatmap, "{}".format(i), (cX, cY),
-                            cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 0, 0), 5)
-    
-            for holes in wsi_object.holes_tissue:
-                cv2.drawContours(heatmap, wsi_object.scaleContourDim(holes, scale), 
-                                 -1, hole_color, line_thickness, lineType=cv2.LINE_8)
-    
-        #heatmap = Image.fromarray(heatmap).convert('RGB')
-
-        if overlaymap:
-            print('start overlay segmap')
-            PALETTE = [0,0,0,
-                       0,128,0,
-                       128,0,0,
-                       0,0,128]
-            overlaymap_p = overlaymap.convert("P")
-            overlaymap_p.putpalette(PALETTE)
-            overlaymap_rgb = np.array(overlaymap_p.convert('RGB'))
-            heatmap = heatmap / 2 + overlaymap_rgb / 2
-            print('end')
-        if all_locs:
-            print('start overlay loc')
-            #heatmap = utils.paint_circles(img=np.array(heatmap), points=np.vstack(all_locs), color='cyan', crosshair=True, markerSize=0) # slow
-            ctr = np.array(all_locs).reshape((-1,1,2)).astype(np.int32)[:,:,[1,0]] # reverse xy
-            heatmap = cv2.drawContours(np.array(heatmap), ctr, -1, (255,255,0), -10, 8) # index=-1:all contours
-            # dilate - ori -> fillpoly?
-            print('end')
-        if tc_positive_locs:
-            print('start overlay loc tc(+)')
-            #heatmap = utils.paint_circles(img=np.array(heatmap), points=np.vstack(tc_positive_locs), color='pink', crosshair=True, markerSize=0) # slow
-            ctr = np.array(tc_positive_locs).reshape((-1,1,2)).astype(np.int32)[:,:,[1,0]] # reverse xy
-            heatmap = cv2.drawContours(np.array(heatmap), ctr, -1, (255,0,255), -10, 8) # index=-1:all contours
-            print('end')
- 
-        return Image.fromarray(heatmap.astype(np.uint8))
-
     # hdf5の読み込み
     file = open_hdf5_file(hdf5_file_path, mode='r')
 
@@ -456,10 +371,6 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
     print('downscaled size for stiching: {} x {}'.format(w, h))
 
     targets = ['detection', 'segmentation']
-    ret_dict = {}
-    for key in targets:
-        ret_dict.setdefault(key, {})
-
     for target in targets:
         grp_target = file[target]
         patch_size = grp_target.attrs['patch_size']
@@ -475,22 +386,12 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
         for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
             grp_cont = file[f'{target}/{cont}']
 
-            coords_patch = [] # 一つのcontourのパッチ座標保存用
-            def get_dataset_coord(name, obj):
-                '''
-                パッチ座標の読み込み。以下の階層にdatasetがある。
-                /target/contourxx/patchxx/coord
-                '''
-                if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'coord'):
-                    #print(obj.name)
-                    coords_patch.append(obj[:])
-            grp_cont.visititems(get_dataset_coord)
-            coords_all_patch.extend(coords_patch)
-
-            print('start stitching {}'.format(grp_cont.name))
-            print('contour {}'.format(i))
-            print('number of patches: {}'.format(len(coords_patch)))
-
+            # dataset読み込み。以下の階層にdatasetがある。
+            # /segmentation/contourxx/patchxx/coord
+            queries = ['coord']
+            v = HDFVisitor(*queries)
+            grp_cont.visititems(v)
+            coords_all_patch.extend(v.container['coord'])
             coords_contour = file[f'{target}/{cont}/coords_contour']
             coords_all_contour.setdefault(i, coords_contour)
 
@@ -500,12 +401,90 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
         print(f'start stitching all contours of {target}')
         print('number of patches: {}'.format(len(all_coords_patch)))
 
-        # create heatmap
-        heatmap = stitch_coords(all_coords_patch, patch_size, target, coords_all_contour)
 
-        # save
-        save_path = os.path.join(save_dir, f'{wsi_object.name}_{target}_all.jpg')
-        heatmap.save(save_path)
+        if w*h > Image.MAX_IMAGE_PIXELS: 
+            raise Image.DecompressionBombError("Visualization Downscale %d is too large" % downscale)
+        
+        if alpha < 0 or alpha == -1:
+            heatmap = Image.new(size=(w,h), mode="RGB", color=bg_color)
+        else:
+            heatmap = Image.new(size=(w,h), mode="RGBA", color=bg_color + (int(255 * alpha),))
+    
+        heatmap = np.array(heatmap)
+    
+        DrawMapFromCoords(heatmap, wsi_object, all_coords_patch, patch_size, vis_level, indices=None, draw_grid=draw_grid)
+        heatmap = cv2.cvtColor(heatmap, cv2.COLOR_RGB2BGR)
+    
+        if draw_contour:
+            color = (0,255,0)
+            hole_color = (255,0,0)
+            line_thickness=200
+            number_contours = True
+            downsample = wsi_object.level_downsamples[vis_level] # image size at 'heatmap level' for stitching. (Not level0 nor patch level)
+            scale = [1/downsample[0], 1/downsample[1]]
+            top_left = (0,0)
+            offset = tuple(-(np.array(top_left) * scale).astype(int))
+            line_thickness = int(line_thickness * math.sqrt(scale[0] * scale[1]))
+
+
+            for i, coords_contour in coords_all_contour.items():
+                if not number_contours:
+                    cv2.drawContours(heatmap, wsi_object.scaleContourDim(coords_contour, scale), 
+                                     -1, color, line_thickness, lineType=cv2.LINE_8, offset=offset)
+        
+                else: # add numbering to each contour
+                    contour = np.array(wsi_object.scaleContourDim(coords_contour, scale))
+                    M = cv2.moments(contour)
+                    cX = int(M["m10"] / (M["m00"] + 1e-9))
+                    cY = int(M["m01"] / (M["m00"] + 1e-9))
+                    # draw the contour and put text next to center
+                    cv2.drawContours(heatmap,  [contour], -1, color, line_thickness, lineType=cv2.LINE_8, offset=offset)
+                    cv2.putText(heatmap, "{}".format(i), (cX, cY),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+    
+            for holes in wsi_object.holes_tissue:
+                cv2.drawContours(heatmap, wsi_object.scaleContourDim(holes, scale), 
+                                 -1, hole_color, line_thickness, lineType=cv2.LINE_8)
+
+        save_path = os.path.join(save_dir, f'{wsi_object.name}_{target}.jpg')
+        cv2.imwrite(save_path, heatmap)
+
+        if target == 'segmentation':
+            if overlaymap is not None:
+                if not isinstance(overlaymap, Image.Image):
+                    overlay = Image.fromarray(overlaymap)
+                print('start overlay segmap')
+                PALETTE = [0,0,0,
+                           0,128,0,
+                           128,0,0,
+                           0,0,128]
+                overlaymap_p = overlay.convert("P")
+                overlaymap_p.putpalette(PALETTE)
+                overlaymap_rgb = np.array(overlaymap_p.convert('RGB')).astype(np.uint8)
+                overlaymap_bgr = overlaymap_rgb[:,:,::-1]
+                mask = np.zeros_like(overlaymap_bgr).astype(np.uint8)
+                mask[np.any(overlaymap_bgr>0, axis=2)] = 255
+                heatmap = heatmap.astype(np.uint8)
+                heatmap_inner = np.bitwise_and(heatmap, mask)
+                heatmap_outer = np.bitwise_and(heatmap, (255 - mask))
+                heatmap = heatmap_outer + (heatmap_inner / 2) + (overlaymap_bgr / 2)
+                print('end')
+            if all_locs:
+                print('start overlay loc')
+                #heatmap = utils.paint_circles(img=np.array(heatmap), points=np.vstack(all_locs), color='cyan', crosshair=True, markerSize=0) # slow
+                ctr = np.array(all_locs).reshape((-1,1,2)).astype(np.int32)[:,:,[1,0]] # reverse xy
+                heatmap = cv2.drawContours(np.array(heatmap), ctr, -1, (255,255,0), -10, 8) # index=-1:all contours
+                print('end')
+            if tc_positive_locs:
+                print('start overlay loc tc(+)')
+                #heatmap = utils.paint_circles(img=np.array(heatmap), points=np.vstack(tc_positive_locs), color='pink', crosshair=True, markerSize=0) # slow
+                ctr = np.array(tc_positive_locs).reshape((-1,1,2)).astype(np.int32)[:,:,[1,0]] # reverse xy
+                heatmap = cv2.drawContours(np.array(heatmap), ctr, -1, (0,255,255), -10, 8) # index=-1:all contours
+                print('end')
+ 
+            # save
+            save_path = os.path.join(save_dir, f'{wsi_object.name}_{target}_overlay.jpg')
+            cv2.imwrite(save_path, heatmap)
 
     file.close()
 
@@ -575,13 +554,18 @@ def calculate_TPS(file_path, wsi_object):
     print('start calculating TPS {}'.format(file.attrs['name']))
 
     #-----------------------------------------------------------#
-    # segmentationの結果をGrayScaleのヒートマップとして取得する #
+    # segmentationの結果をindex color画像として取得する #
     #-----------------------------------------------------------#
     grp_target = file['segmentation']
 
     # 全contourの情報を取得
     coords_all_patch = [] # 全てのcontourのパッチ座標保存用
     segmap_all_patch = [] # 全てのcontourのsegmap保存用
+
+    #TODO
+    #datasetとしてcontour毎に計算済みTPSを記憶しておく。もし全てのcontourが計算済みのdatasetを持っていたら、summaryも含めて前回の値を返すだけ。
+    #もし計算済みのdatasetを持っていないcontourがあったら、そのcontourだけTPSを計算し、後のcontourは値を使いまわす。ただしsummaryは再計算して更新する必要がある。
+    # -> もし一つでも変わっていたらsummary再計算のためにマップを準備しないといけない。なので時間短縮効果は、一つも変化ない場合のみ。なのであまり意味がない可能性が高い
 
     for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
         grp_cont = file[f'segmentation/{cont}']
@@ -596,6 +580,8 @@ def calculate_TPS(file_path, wsi_object):
         segmap_all_patch.extend(v.container['segmap'])
 
     target_level_seg = file['segmentation'].attrs.get('patch_level')
+    step_size = file['segmentation'].attrs.get('step_size')
+    step_size_seg = (step_size, step_size)
     dset = segmap_all_patch
     coords = coords_all_patch # coord at level0
     downsamples = wsi.level_downsamples[target_level_seg]
@@ -607,8 +593,8 @@ def calculate_TPS(file_path, wsi_object):
     print('downscaled size for calculating TPS: {} x {}'.format(w, h))
 
     # 全パッチ分のsegmentationの結果を一枚にまとめる
-    segmap = DrawMapGray(canvas, dset, coords_seg_level, patch_size_seg, indices=None, file=file)
-    segmap = np.array(segmap)
+    segmap = DrawMapGray(canvas, dset, coords_seg_level, patch_size_seg, step_size=step_size_seg, indices=None, file=file)
+#    segmap = np.array(segmap)
 
     #------------------------------------------------------------------------#
     # detectionの結果の座標を読み込んでsegmentationのlevelでの座標に変換する #
@@ -639,21 +625,27 @@ def calculate_TPS(file_path, wsi_object):
     patch_downsample_seg = int(wsi.level_downsamples[target_level_seg])
 
     detection_loc_all_patch_ref_level = []
-    for coord, detection_loc in zip(coords_all_patch, detection_loc_all_patch):
+    detection_indices_all_patch_notempty = []
+    for coord, detection_loc, detection_ind in zip(coords_all_patch, detection_loc_all_patch, detection_indices_all_patch):
+        if np.all(detection_loc == np.uint32(-1)): # 核の数が0だった場合、np.array([-1, -1], dtype=np.uint32)が入っている
+            continue
         detection_loc = coord + detection_loc * patch_downsample  # level0での絶対座標に変換. coordはlevel0でのtopleft
         detection_loc_all_patch_ref_level.append(detection_loc)
+        detection_indices_all_patch_notempty.append(detection_ind)
 
-    # seg levelでの絶対座標に変換
-    detection_loc_all_patch_seg_level = [ (loc/patch_downsample_seg).astype(np.int32) for loc in detection_loc_all_patch_ref_level]
+    # seg levelでの座標に変換
+    detection_loc_all_patch_seg_level = [(loc/patch_downsample_seg).astype(np.int32) for loc in detection_loc_all_patch_ref_level]
 
 
     #------------------------------------------#
     # contour毎にループしてTPSを算出 @seglevel #
     #------------------------------------------#
     all_locs = detection_loc_all_patch_seg_level
-    tc_positive_locs = [ all_locs[i_patch][detection_indices_all_patch[i_patch][:].tolist()] for i_patch in range(len(all_locs))]
-    all_locs = np.unique(np.vstack(all_locs), axis=0).astype(np.int32)[:,[1,0]] # reverse y,x
-    tc_positive_locs = np.unique(np.vstack(tc_positive_locs), axis=0).astype(np.int32)[:,[1,0]] # reverse y,x
+    tc_positive_locs = [all_locs[i_patch][detection_indices_all_patch_notempty[i_patch][:].tolist()] for i_patch in range(len(all_locs))]
+    all_locs = np.vstack(all_locs).astype(np.int32)[:,[1,0]] # reverse y,x
+    tc_positive_locs = np.vstack(tc_positive_locs).astype(np.int32)[:,[1,0]] # reverse y,x
+#    all_locs = np.unique(np.vstack(all_locs), axis=0).astype(np.int32)[:,[1,0]] # reverse y,x
+#    tc_positive_locs = np.unique(np.vstack(tc_positive_locs), axis=0).astype(np.int32)[:,[1,0]] # reverse y,x
     #print(f"all_locs {len(all_locs)}")
     #print(f"tc_positive_locs {len(tc_positive_locs)}")
 
@@ -661,7 +653,7 @@ def calculate_TPS(file_path, wsi_object):
 
     coords_all_contour = [] # 全てのcontourの輪郭座標保存用
     w, h = wsi.level_dimensions[target_level_seg]
-    mask_all = np.zeros((h,w), dtype=np.uint8)
+    mask_all = np.zeros((h,w), dtype=np.int32)
 
     # contour毎に処理する
     scale = [1/patch_downsample_seg, 1/patch_downsample_seg]
@@ -670,36 +662,33 @@ def calculate_TPS(file_path, wsi_object):
         coords_all_contour.append(coords_contour[:])
 
         cont_mask = np.zeros((h,w), dtype=np.float32)
-        cont_mask = cv2.fillPoly(cont_mask, wsi_object.scaleContourDim([coords_contour[:]], scale), (255)).astype(np.uint8) # binary mask of a contour
+        cont_mask = cv2.fillPoly(cont_mask, wsi_object.scaleContourDim([coords_contour[:]], scale), (1)).astype(np.uint8) # binary mask of a contour
         mask_all += cont_mask
 
         # count tc
-        print('start count_TC')
-        tc_count, tc_count_on_segmap, locs_inside_contour_segmap = count_TC(cont_mask, segmap, all_locs)
-        print(f'TC count               : {tc_count}')
-        print(f'TC count with segmap   : {tc_count_on_segmap}')
+        tc_count, tc_count_on_segmap, _ = count_TC(cont_mask, segmap, all_locs)
+        print(f'TC count contour{i}              : {tc_count}')
+        print(f'TC count contour{i} with segmap  : {tc_count_on_segmap}')
 
         # count tc(+)
-        print('start count_TC')
-        tc_pos_count, tc_pos_count_on_segmap, locs_pos_inside_contour_segmap = count_TC(cont_mask, segmap, tc_positive_locs)
-        print(f'TC(+) count              : {tc_pos_count}')
-        print(f'TC(+) count with segmap  : {tc_pos_count_on_segmap}')
+        tc_pos_count, tc_pos_count_on_segmap, _ = count_TC(cont_mask, segmap, tc_positive_locs)
+        print(f'TC(+) count contour{i}             : {tc_pos_count}')
+        print(f'TC(+) count contour{i}with segmap  : {tc_pos_count_on_segmap}')
 
         # TPS
-        print(f'TPS contour{i}         : {tc_pos_count/(tc_count+1e-6)}')
+        print(f'TPS contour{i}           : {tc_pos_count/(tc_count+1e-6)}')
         print(f'TPS cont{i} with segmap  : {tc_pos_count_on_segmap/(tc_count_on_segmap+1e-6)}')
 
     # 全てのcontoursに対して処理する
     # count summary tc
-    print('start count_TC')
     tc_count, tc_count_on_segmap, locs_inside_contour_segmap = count_TC(mask_all, segmap, all_locs)
-    print(f'TC count               : {tc_count}')
-    print(f'TC count with segmap   : {tc_count_on_segmap}')
+    print(f'TC count summary               : {tc_count}')
+    print(f'TC count summary with segmap   : {tc_count_on_segmap}')
 
     # count summary tc(+)
     tc_pos_count, tc_pos_count_on_segmap, locs_pos_inside_contour_segmap = count_TC(mask_all, segmap, tc_positive_locs)
-    print(f'TC(+) count              : {tc_pos_count}')
-    print(f'TC(+) count with segmap  : {tc_pos_count_on_segmap}')
+    print(f'TC(+) count summary              : {tc_pos_count}')
+    print(f'TC(+) count summary with segmap  : {tc_pos_count_on_segmap}')
 
     # TPS summary
     print(f'TPS summary              : {tc_pos_count/(tc_count+1e-6)}')
@@ -707,7 +696,6 @@ def calculate_TPS(file_path, wsi_object):
 
 
     # segmapを囲み領域に限定する
-    #TODO slow
     mask_all = np.where((mask_all != 0), 1, 0).astype(np.uint8) # binary mask 0 or 1
     segmap = mask_all * segmap
 
@@ -715,4 +703,4 @@ def calculate_TPS(file_path, wsi_object):
 
     file.close()
 
-    return Image.fromarray(segmap), target_level_seg, locs_inside_contour_segmap, locs_pos_inside_contour_segmap
+    return segmap, target_level_seg, locs_inside_contour_segmap, locs_pos_inside_contour_segmap

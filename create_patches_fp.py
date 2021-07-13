@@ -233,7 +233,8 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
         if save_mask:
             mask = WSI_object.visWSI(**current_vis_params)
             mask_path = os.path.join(mask_save_dir, slide_id+'.jpg')
-            mask.save(mask_path)
+            #mask.save(mask_path)
+            cv2.imwrite(mask_path, mask)
 
         # save patch coordinates of each contour as .h5 file
         patch_time_elapsed = -1 # Default time
@@ -308,16 +309,14 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                 calc_tps_time_elapsed = time.time() - start
 
         # 視覚化用にヒートマップをリサイズする
-        downscale=8
+        downscale=16
         wsi = WSI_object.getOpenSlide()
         vis_level = wsi.get_best_level_for_downsample(downscale)
 
-        #TODO slow -> opencv is much faster
         def resize_to_vis_level(img, level_from, level_to):
             assert level_from <= level_to
             w, h = wsi.level_dimensions[level_to]
-            return Image.fromarray(cv2.resize(np.array(img), (w,h)))
-            #return img.resize((w,h))
+            return cv2.resize(np.array(img), (w, h))
         heatmap_vis_level = resize_to_vis_level(heatmap, level_from=heatmap_level, level_to=vis_level)
 
         def rescale_to_vis_level(locs, level_from, level_to):
@@ -330,7 +329,6 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
         # save stitching heatmap of patches
         stitch_time_elapsed = -1
         if stitch:
-            #file_path = os.path.join(patch_save_dir, slide_id+'.h5')
             file_path = WSI_object.hdf5_file
             if os.path.isfile(file_path):
                 start = time.time()
@@ -340,13 +338,14 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                 StitchCoords(file_path, WSI_object, stitch_save_dir, downscale=downscale, bg_color=(0,0,0), alpha=-1,
                              draw_grid=True, draw_contour=True, overlaymap=heatmap_vis_level, all_locs=all_locs, tc_positive_locs=tc_positive_locs) 
 
+                stitch_time_elapsed = time.time() - start
 
-        print("segmentation took {} seconds".format(seg_time_elapsed))
-        print("patching took {} seconds".format(patch_time_elapsed))
-        print("detection took {} seconds".format(detection_time_elapsed))
-        print("segmentation took {} seconds".format(segmentation_time_elapsed))
-        print("calculate TPS took {} seconds".format(calc_tps_time_elapsed))
-        print("stitching took {} seconds".format(stitch_time_elapsed))
+        print("segmentation took  {:>10.5f} seconds".format(seg_time_elapsed))
+        print("patching took      {:>10.5f} seconds".format(patch_time_elapsed))
+        print("detection took     {:>10.5f} seconds".format(detection_time_elapsed))
+        print("segmentation took  {:>10.5f} seconds".format(segmentation_time_elapsed))
+        print("calculate TPS took {:>10.5f} seconds".format(calc_tps_time_elapsed))
+        print("stitching took     {:>10.5f} seconds".format(stitch_time_elapsed))
         df.loc[idx, 'status'] = 'processed'
 
         seg_times += seg_time_elapsed
@@ -358,9 +357,9 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
     stitch_times /= total
 
     df.to_csv(os.path.join(save_dir, 'process_list_autogen.csv'), index=False)
-    print("average segmentation time in s per slide: {}".format(seg_times))
-    print("average patching time in s per slide: {}".format(patch_times))
-    print("average stiching time in s per slide: {}".format(stitch_times))
+    print("average segmentation time in s per slide: {:>10.5f}".format(seg_times))
+    print("average patching time in s per slide:     {:>10.5f}".format(patch_times))
+    print("average stiching time in s per slide:     {:>10.5f}".format(stitch_times))
         
     return seg_times, patch_times
 
@@ -427,7 +426,7 @@ if __name__ == '__main__':
     seg_params = {'seg_level': -1, 'sthresh': 8, 'mthresh': 7, 'close': 4, 'use_otsu': False,
                   'keep_ids': 'none', 'exclude_ids': 'none'}
     filter_params = {'a_t':100, 'a_h': 16, 'max_n_holes':8}
-    vis_params = {'vis_level': -1, 'line_thickness': 250, 'number_contours': True}
+    vis_params = {'vis_level': -1, 'line_thickness': 200, 'number_contours': True}
     patch_params = {'use_padding': True, 'contour_fn': 'four_pt'} # (choices between 'four_pt' - checks if one of four points need to be inside the contour, 'four_pt_hard' - checks if all four points need to be inside the contour, 'center' - checks if the center of the patch is inside the contour, 'basic' - checks if the top-left corner of the patch is inside the contour, default: 'four_pt')
 
     if args.preset:
@@ -472,26 +471,45 @@ if __name__ == '__main__':
                                             radius=args.radius)
 
 # TODO
-# overlayの時間短縮(paint_circle)
+# onnx model
+# マージ画像で核検出だけ、セグメンテーションだけ、元画像だけ、と分けて出力
+# defaultでセーブしないようにし、後から必要に応じて画像を作るようにする
+# -> forwardのところでsave_dir をdefaultでnoneにして、スキップする条件をsave_dir=noneのときはスキップしないようにすれば、後からforwardをすることができる。stitchingはコマンド引数で--stitchを渡すかどうかで制御出来る
+#    ただしとりあえず保留
+# 一度forward完了していても、ただスキップするだけでもパッチ数が多いとそれなりに時間かかる。モデルのロードに1.5秒、あとはパッチ数に応じてループに時間かかる。パッチ数の多いdetectionの方が、segmentationよりも時間かかる
+#  -> これはどうしようもない。onnxにしても変わらないだろう。dataloaderを工夫できればいいが、pytorchのは優秀なので、これ以上は厳しいのでは？
+# 丸めの問題　np.ceil を使っているところ。少数をintにキャストした時の座標の問題確認
+# contourの番号を描いてから点を上書きしているので汚い
+# hole 対応
+# makefile
 # 無駄な処理しているところないか
-# hdf5 fileからROIをjpgにして保存する機能
+# hdf5 fileからROIをjpgにして保存する機能 or seg, detectionのときに元の画像のROIも一緒に保存してしまう
 # pyspark
 # hdf5 viewerをインストール
 # c++移行
 # gui
-# makefile
 # docker compose?
 # sidecar container?
-# hole 対応
-# 囲みが閉じてない場合でも大丈夫か?
-# patch 取得のルーチン化
-# contourをはみ出たものも描画・カウントされている?
-# mapのoverlayが囲みからはみ出ているのを直す
-# overlap strategy
 # np.vstackで0の配列はエラーになる
-# calculate TPSでもっとfasterなアルゴリズム -> dataframeにしてベクトル演算?
 # github copilot
-# 丸めの問題　np.ceil を使っているところ。少数をintにキャストした時の座標の問題確認
-# contourの番号を描いてから点を上書きしているので汚い
 # TODO slow　の箇所
+# detectionの閾値の設定、変更方法およびデータの持たせ方検討
+# 気管支腺の領域の予測が、それを含む間質をちゃんと学習しているので、間質をアノテーションしたら結構うまく分けられる気がする。が、アノテーションが大変。
+# 学習時に特徴空間でクラスタリングされるような最適化をしたらどうか？->セグメンテーションだとラベル付けが難しい。
+
+
+# DONE
+# overlayの時間短縮(paint_circle)
+# forwardを途中で止めても、再開は途中から開始できる
+# patch 取得のルーチン化
+# stitch coord de patch 取得のルーチン化
 # pil -> cv (resize fast)
+# mapのoverlayが囲みからはみ出ているのを直す
+# contourをはみ出たものも描画・カウントされている?
+# calculate TPSでもっとfasterなアルゴリズム -> dataframeにしてベクトル演算?
+# overlay するときに、囲み領域だけoverlayしないと、全体的に暗くなってしまう
+# 囲みが閉じてない場合でも大丈夫か?
+# 閾値が変更された場合、囲みが追加削除変更された場合の処理
+# auto gen csvの扱い
+#   -> csvでprocessのフラグをチェックするのをやめる(no_auto_skip引数をデフォルトにする)
+# overlap strategy
