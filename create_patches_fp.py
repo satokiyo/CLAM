@@ -12,58 +12,6 @@ import pandas as pd
 from PIL import Image
 import cv2
 
-#def stitching(file_path, wsi_object, downscale = 64):
-#    start = time.time()
-#    heatmap = StitchCoords(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True)
-#    total_time = time.time() - start
-#    
-#    return heatmap, total_time
-#
-#def nuclei_detect(file_path, wsi_object, model_path, heatmap=None, downscale=64):
-#    start = time.time()
-#    from forward.forward import forward_nuclei_detect, detect_tc_positive_nuclei
-#    file_path = forward_nuclei_detect(file_path, wsi_object, model_path=model_path) # forward using trained model and save info to .h5 file.
-#    file_path = detect_tc_positive_nuclei(file_path, wsi_object) 
-#    heatmap = StitchPoints(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap, draw_contour=True)
-#    total_time = time.time() - start
-#    
-#    return heatmap, total_time
-#
-#def segmentation(file_path, wsi_object, model_path, heatmap=None, downscale=64):
-#    start = time.time()
-#    from forward.forward import forward_segmentation
-#    file_path = forward_segmentation(file_path, wsi_object, model_path=model_path) # forward using trained model and save info to .h5 file.
-#    heatmap = StitchSegMap(file_path, wsi_object, downscale=downscale, bg_color=(0,0,0), alpha=-1, draw_grid=False, heatmap=heatmap)
-#    total_time = time.time() - start
-#    
-#    return heatmap, total_time
-
-
-
-#def segment(WSI_object, seg_params, filter_params):
-#    ### Start Seg Timer
-#    start_time = time.time()
-#
-#    # Segment
-#    WSI_object.segmentTissue(**seg_params, filter_params=filter_params)
-#
-#    ### Stop Seg Timers
-#    seg_time_elapsed = time.time() - start_time   
-#    return WSI_object, seg_time_elapsed
-
-#def patching(WSI_object, **kwargs):
-#    ### Start Patch Timer
-#    start_time = time.time()
-#
-#    # Patch
-#    file_path = WSI_object.process_contours(**kwargs)
-#
-#
-#    ### Stop Patch Timer
-#    patch_time_elapsed = time.time() - start_time
-#    return file_path, patch_time_elapsed
-
-
 def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_dir, 
                   patch_size = 256, step_size = 256, 
                   seg_params = {'seg_level': -1, 'sthresh': 8, 'mthresh': 7, 'close': 4, 'use_otsu': False,
@@ -95,15 +43,6 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
     process_stack = df[mask]
 
     total = len(process_stack)
-
-#    legacy_support = 'a' in df.keys()
-#    if legacy_support:
-#        print('detected legacy segmentation csv file, legacy support enabled')
-#        df = df.assign(**{'a_t': np.full((len(df)), int(filter_params['a_t']), dtype=np.uint32),
-#        'a_h': np.full((len(df)), int(filter_params['a_h']), dtype=np.uint32),
-#        'max_n_holes': np.full((len(df)), int(filter_params['max_n_holes']), dtype=np.uint32),
-#        'line_thickness': np.full((len(df)), int(vis_params['line_thickness']), dtype=np.uint32),
-#        'contour_fn': np.full((len(df)), patch_params['contour_fn'])})
 
     seg_times = 0.
     patch_times = 0.
@@ -155,23 +94,12 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
 
 
             for key in vis_params.keys():
-#                if legacy_support and key == 'vis_level':
-#                    df.loc[idx, key] = -1
                 current_vis_params.update({key: df.loc[idx, key]})
 
             for key in filter_params.keys():
-#                if legacy_support and key == 'a_t':
-#                    old_area = df.loc[idx, 'a']
-#                    seg_level = df.loc[idx, 'seg_level']
-#                    scale = WSI_object.level_downsamples[seg_level]
-#                    adjusted_area = int(old_area * (scale[0] * scale[1]) / (512 * 512))
-#                    current_filter_params.update({key: adjusted_area})
-#                    df.loc[idx, key] = adjusted_area
                 current_filter_params.update({key: df.loc[idx, key]})
 
             for key in seg_params.keys():
-#                if legacy_support and key == 'seg_level':
-#                    df.loc[idx, key] = -1
                 current_seg_params.update({key: df.loc[idx, key]})
 
             for key in patch_params.keys():
@@ -233,7 +161,6 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
         if save_mask:
             mask = WSI_object.visWSI(**current_vis_params)
             mask_path = os.path.join(mask_save_dir, slide_id+'.jpg')
-            #mask.save(mask_path)
             cv2.imwrite(mask_path, mask)
 
         # save patch coordinates of each contour as .h5 file
@@ -248,20 +175,6 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
             WSI_object.process_contours(**current_patch_params)
             
             patch_time_elapsed = time.time() - start_time
-
-
-#TODO 最後にstitch
-#        # save stitching heatmap of patches
-#        stitch_time_elapsed = -1
-#        if stitch:
-#            #file_path = os.path.join(patch_save_dir, slide_id+'.h5')
-#            file_path = WSI_object.hdf5_file
-#            if os.path.isfile(file_path):
-#                start = time.time()
-#                # Patch and save in WSI_object.hdf5_file
-# 
-#                # Stitch
-#                StitchCoords(file_path, WSI_object, stitch_save_dir, downscale=64, bg_color=(0,0,0), alpha=-1, draw_grid=True, draw_contour=True) # heatmap for each contour
 
 
         # forward detection model.
@@ -280,6 +193,7 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                 file_path = detect_tc_positive_nuclei(file_path, WSI_object, intensity_thres=intensity_thres, area_thres=area_thres, radius=radius) 
 
                 detection_time_elapsed = time.time() - start
+
 
         # forward segmentation model.
         segmentation_time_elapsed = -1
@@ -308,27 +222,28 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
 
                 calc_tps_time_elapsed = time.time() - start
 
-        # 視覚化用にヒートマップをリサイズする
-        downscale=16
-        wsi = WSI_object.getOpenSlide()
-        vis_level = wsi.get_best_level_for_downsample(downscale)
-
-        def resize_to_vis_level(img, level_from, level_to):
-            assert level_from <= level_to
-            w, h = wsi.level_dimensions[level_to]
-            return cv2.resize(np.array(img), (w, h))
-        heatmap_vis_level = resize_to_vis_level(heatmap, level_from=heatmap_level, level_to=vis_level)
-
-        def rescale_to_vis_level(locs, level_from, level_to):
-            assert level_from <= level_to
-            locs = [loc / 2**(level_to-level_from) for loc in locs]
-            return locs
-        all_locs = rescale_to_vis_level(all_locs, level_from=heatmap_level, level_to=vis_level)
-        tc_positive_locs = rescale_to_vis_level(tc_positive_locs, level_from=heatmap_level, level_to=vis_level)
 
         # save stitching heatmap of patches
         stitch_time_elapsed = -1
         if stitch:
+            # 視覚化用にヒートマップをリサイズする
+            downscale=16
+            wsi = WSI_object.getOpenSlide()
+            vis_level = wsi.get_best_level_for_downsample(downscale)
+
+            def resize_to_vis_level(img, level_from, level_to):
+                assert level_from <= level_to
+                w, h = wsi.level_dimensions[level_to]
+                return cv2.resize(np.array(img), (w, h))
+            heatmap_vis_level = resize_to_vis_level(heatmap, level_from=heatmap_level, level_to=vis_level)
+
+            def rescale_to_vis_level(locs, level_from, level_to):
+                assert level_from <= level_to
+                locs = [loc / 2**(level_to-level_from) for loc in locs]
+                return locs
+            all_locs = rescale_to_vis_level(all_locs, level_from=heatmap_level, level_to=vis_level)
+            tc_positive_locs = rescale_to_vis_level(tc_positive_locs, level_from=heatmap_level, level_to=vis_level)
+
             file_path = WSI_object.hdf5_file
             if os.path.isfile(file_path):
                 start = time.time()
@@ -447,7 +362,7 @@ if __name__ == '__main__':
     filter_params["a_t"]=1
     filter_params["a_h"]=1
     filter_params["max_n_holes"]=2
-    patch_params['contour_fn'] = 'five_pt' # 'four_pt' # 'four_pt_hard' 'center' 'basic'
+    patch_params['contour_fn'] = '13_pt' #'five_pt' '13_pt' 'four_pt' # 'four_pt_hard' 'center' 'basic'
 
     parameters = {'seg_params': seg_params,
                   'filter_params': filter_params,
@@ -471,9 +386,12 @@ if __name__ == '__main__':
                                             radius=args.radius)
 
 # TODO
-# onnx model
-# マージ画像で核検出だけ、セグメンテーションだけ、元画像だけ、と分けて出力
+# onnx -> detection model , seg model re learn without bilinearupsample, adaptive pooling
+# log the results with conf settings.
+# makefile
+#  -> 学習用と推論用(deploy用)で分ける
 # defaultでセーブしないようにし、後から必要に応じて画像を作るようにする
+# detect_tc_positive_nucleiの高速化検討(TC(+)count)
 # -> forwardのところでsave_dir をdefaultでnoneにして、スキップする条件をsave_dir=noneのときはスキップしないようにすれば、後からforwardをすることができる。stitchingはコマンド引数で--stitchを渡すかどうかで制御出来る
 #    ただしとりあえず保留
 # 一度forward完了していても、ただスキップするだけでもパッチ数が多いとそれなりに時間かかる。モデルのロードに1.5秒、あとはパッチ数に応じてループに時間かかる。パッチ数の多いdetectionの方が、segmentationよりも時間かかる
@@ -481,7 +399,6 @@ if __name__ == '__main__':
 # 丸めの問題　np.ceil を使っているところ。少数をintにキャストした時の座標の問題確認
 # contourの番号を描いてから点を上書きしているので汚い
 # hole 対応
-# makefile
 # 無駄な処理しているところないか
 # hdf5 fileからROIをjpgにして保存する機能 or seg, detectionのときに元の画像のROIも一緒に保存してしまう
 # pyspark
@@ -513,3 +430,10 @@ if __name__ == '__main__':
 # auto gen csvの扱い
 #   -> csvでprocessのフラグをチェックするのをやめる(no_auto_skip引数をデフォルトにする)
 # overlap strategy
+# マージ画像で核検出だけ、セグメンテーションだけ、元画像だけ、と分けて出力
+# patchの階層をなくして、contourの階層直下にarrayでもたせる。→.h5の容量、速度が早くなるはず
+# test when thres changed
+# open -> with xx:  (to gracefully close the file)
+# detection network -> learn at 20x
+# onnx model -> 対応してないopsが多いので諦めた
+# 5ptでROIチェックをしているところ、囲みが小さすぎる場合への対応 -> add 13pt

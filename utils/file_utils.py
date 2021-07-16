@@ -44,18 +44,17 @@ def create_hdf5_group(h5py_obj, group_name):
         return h5py_obj.create_group(group_name)
 
 
-def create_hdf5_dataset(h5py_obj, dset_name, data):
+def create_hdf5_dataset(h5py_obj, dset_name, data, data_type=None):
     if dset_name in h5py_obj:
-        #print(f"already exist dataset {dset_name}")
-        pass
-
-    else:
-        print(f"create dataset {dset_name}")
-        data_shape = data.shape
+        del h5py_obj[dset_name]
+        print(f"update dataset {dset_name}")
+    data_shape = data.shape
+    if not data_type:
         data_type = data.dtype
-        #chunk_shape = (1, ) + data_shape[1:]
-        #maxshape = (None, ) + data_shape[1:]
-        h5py_obj.create_dataset(dset_name, shape=data_shape, dtype=data_type, data=data) # maxshape=maxshape, chunks=chunk_shape, dtype=data_type)
+    #chunk_shape = (1, ) + data_shape[1:]
+    #maxshape = (None, ) + data_shape[1:]
+    h5py_obj.create_dataset(dset_name, shape=data_shape, dtype=data_type, data=data) # maxshape=maxshape, chunks=chunk_shape, dtype=data_type)
+    print(f"create dataset {dset_name}")
  
 
 def create_hdf5_attrs(h5py_obj, name, data):
@@ -63,8 +62,8 @@ def create_hdf5_attrs(h5py_obj, name, data):
         #print(f"already exist attr {name}")
         pass
     else:
-        print(f"create attr {name}")
         h5py_obj.attrs.create(name=name, data=data)
+        print(f"create attr {name}")
 
 
 def open_hdf5_file(path, mode):
@@ -74,7 +73,7 @@ def open_hdf5_file(path, mode):
     while True:
         count=0
         try:
-            f = h5py.File(path, mode=mode)
+            f = h5py.File(path, libver='latest', mode=mode)
             return f 
         except:
             #print('not ready')

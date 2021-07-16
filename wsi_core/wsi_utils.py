@@ -22,10 +22,11 @@ class HDFVisitor():
     def __call__(self, name, obj):
         for query in self.container.keys():
             if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == query):
-                if query == 'segmap':
-                    self.container[name.split("/")[-1]].append(obj.ref) # ref
-                else:
-                    self.container[name.split("/")[-1]].append(obj[:])
+                #if query == 'segmap':
+                #    self.container[name.split("/")[-1]].append(obj.ref) # ref
+                #else:
+                #    self.container[name.split("/")[-1]].append(obj[:])
+                self.container[name.split("/")[-1]].append(obj[:])
 
 
 def count_TC(mask, segmap, locs):
@@ -254,7 +255,7 @@ def DrawMap(canvas, patch_dset, coords, patch_size, indices=None, verbose=1, dra
 
 
 #TODO slow
-def DrawMapGray(canvas, patch_dset, coords, patch_size, step_size, indices=None, verbose=1, file=None):
+def DrawMapGray(canvas, patch_dset, coords, patch_size, step_size, indices=None, verbose=1):
     if indices is None:
         indices = np.arange(len(coords))
     total = len(indices)
@@ -268,8 +269,8 @@ def DrawMapGray(canvas, patch_dset, coords, patch_size, step_size, indices=None,
                 print('progress: {}/{} stitched segmap'.format(idx, total))
         
         patch_id = indices[idx]
-        patch_ref = patch_dset[patch_id]
-        patch = file[patch_ref]
+        patch = patch_dset[patch_id]
+        #patch = file[patch_ref]
         coord = coords[patch_id]
         canvas_crop_shape = canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0]].shape[:2]
         if patch_size > step_size: # overlap tile
@@ -384,22 +385,35 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
 
         # contour毎に処理する
         for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
-            grp_cont = file[f'{target}/{cont}']
+#            grp_cont = file[f'{target}/{cont}']
 
             # dataset読み込み。以下の階層にdatasetがある。
-            # /segmentation/contourxx/patchxx/coord
-            queries = ['coord']
-            v = HDFVisitor(*queries)
-            grp_cont.visititems(v)
-            coords_all_patch.extend(v.container['coord'])
+            # /segmentation/contourxx/coords_patches
+#            queries = ['coords_patches']
+#            v = HDFVisitor(*queries)
+#            grp_cont.visititems(v)
+#            coords_all_patch.extend(v.container['coords_patches'])
             coords_contour = file[f'{target}/{cont}/coords_contour']
             coords_all_contour.setdefault(i, coords_contour)
 
+        queries = ['coords_patches']
+        v = HDFVisitor(*queries)
+    #        grp_cont.visititems(v)
+        grp_target.visititems(v)
+        if not v.container['coords_patches']:
+            print(f'There is no patch generated for {target}.')
+            print('exit.')
+            import sys
+            sys.exit()
+
+        coords_all_patch = np.vstack(v.container['coords_patches'])
+ 
 
         # 全てのcontoursに対して処理する
         all_coords_patch = np.unique(coords_all_patch, axis=0) # 重複するpatchは除く
         print(f'start stitching all contours of {target}')
         print('number of patches: {}'.format(len(all_coords_patch)))
+
 
 
         if w*h > Image.MAX_IMAGE_PIXELS: 
@@ -567,33 +581,40 @@ def calculate_TPS(file_path, wsi_object):
     #もし計算済みのdatasetを持っていないcontourがあったら、そのcontourだけTPSを計算し、後のcontourは値を使いまわす。ただしsummaryは再計算して更新する必要がある。
     # -> もし一つでも変わっていたらsummary再計算のためにマップを準備しないといけない。なので時間短縮効果は、一つも変化ない場合のみ。なのであまり意味がない可能性が高い
 
-    for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
-        grp_cont = file[f'segmentation/{cont}']
+#    for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
+#        grp_cont = file[f'segmentation/{cont}']
 
         # dataset読み込み。以下の階層にdatasetがある。
-        # /segmentation/contourxx/patchxx/coord
-        # /segmentation/contourxx/patchxx/segmap
-        queries = ['coord', 'segmap']
-        v = HDFVisitor(*queries)
-        grp_cont.visititems(v)
-        coords_all_patch.extend(v.container['coord'])
-        segmap_all_patch.extend(v.container['segmap'])
+        # /segmentation/contourxx/coords_patches
+        # /segmentation/contourxx/segmap
+    queries = ['coords_patches', 'segmap']
+    v = HDFVisitor(*queries)
+#        grp_cont.visititems(v)
+    grp_target.visititems(v)
+    if not v.container['coords_patches']:
+        print('There is no patch generated for segmentation.')
+        print('exit.')
+        import sys
+        sys.exit()
+
+    coords_all_patch = np.vstack(v.container['coords_patches'])
+    segmap_all_patch = np.vstack(v.container['segmap'])
 
     target_level_seg = file['segmentation'].attrs.get('patch_level')
     step_size = file['segmentation'].attrs.get('step_size')
     step_size_seg = (step_size, step_size)
-    dset = segmap_all_patch
     coords = coords_all_patch # coord at level0
     downsamples = wsi.level_downsamples[target_level_seg]
     coords_seg_level = np.ceil(np.array(coords) / downsamples).astype(np.int32) # convert coord for target level
-    patch_size_seg = file[segmap_all_patch[0]].shape[:2]
+    patch_size_seg = segmap_all_patch[0].shape[:2]
+    dset = segmap_all_patch
 
     w, h = wsi.level_dimensions[target_level_seg] # image size at 'heatmap level' for calculating TPS. (Not level0 nor patch level)
     canvas = np.zeros((h,w))
     print('downscaled size for calculating TPS: {} x {}'.format(w, h))
 
     # 全パッチ分のsegmentationの結果を一枚にまとめる
-    segmap = DrawMapGray(canvas, dset, coords_seg_level, patch_size_seg, step_size=step_size_seg, indices=None, file=file)
+    segmap = DrawMapGray(canvas, dset, coords_seg_level, patch_size_seg, step_size=step_size_seg, indices=None)
 #    segmap = np.array(segmap)
 
     #------------------------------------------------------------------------#
@@ -602,23 +623,67 @@ def calculate_TPS(file_path, wsi_object):
     grp_target = file['detection']
 
     # 全contourの情報を取得
-    coords_all_patch = [] # 全てのcontourのパッチ座標保存用
-    detection_loc_all_patch = [] # 全てのcontourのdetection_loc保存用
-    detection_indices_all_patch = [] # 全てのcontourのdetection_indices保存用
+#    coords_all_patch = [] # 全てのcontourのパッチ座標保存用
+#    detection_loc_all_patch = [] # 全てのcontourのdetection_loc保存用
+#    detection_indices_all_patch = [] # 全てのcontourのdetection_indices保存用
 
-    for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
-        grp_cont = file[f'detection/{cont}']
+#    for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
+#        grp_cont = file[f'detection/{cont}']
 
         # dataset読み込み。以下の階層にdatasetがある。
-        # /detection/contourxx/patchxx/coord
-        # /detection/contourxx/patchxx/detection_loc
-        # /detection/contourxx/patchxx/detection_tc_positive_indices
-        queries = ['coord', 'detection_loc', 'detection_tc_positive_indices']
-        v = HDFVisitor(*queries)
-        grp_cont.visititems(v)
-        coords_all_patch.extend(v.container['coord'])
-        detection_loc_all_patch.extend(v.container['detection_loc'])
-        detection_indices_all_patch.extend(v.container['detection_tc_positive_indices'])
+        # /detection/contourxx/coords_patches
+        # /detection/contourxx/detection_loc_x
+        # /detection/contourxx/detection_loc_y
+        # /detection/contourxx/detection_tc_positive_indices
+    queries = ['coords_patches', 'detection_loc_x', 'detection_loc_y', 'detection_tc_positive_indices']
+    v = HDFVisitor(*queries)
+    grp_target.visititems(v)
+    if not v.container['coords_patches']:
+        print('There is no patch generated for detection.')
+        print('exit.')
+        import sys
+        sys.exit()
+        #grp_cont.visititems(v)
+    coords_all_patch = np.vstack(v.container['coords_patches'])
+#    detection_loc = np.array([np.array(patch_x, patch_y).T for cont_x, cont_y in zip(v.container['detection_loc_x'], v.container['detection_loc_y']) for patch_x, patch_y in zip(cont_x, cont_y) ])
+    #tmp = np.array([(patch_x, patch_y) for cont_x, cont_y in zip(v.container['detection_loc_x'], v.container['detection_loc_y']) for patch_x, patch_y in zip(cont_x, cont_y)]) # tuple of xy, by contour to by patch 
+    buf = []
+    for cont_id, (cont_x, cont_y) in enumerate(zip(v.container['detection_loc_x'], v.container['detection_loc_y'])):
+        buf.append([])
+        for patch_x, patch_y in zip(cont_x, cont_y): # tuple of xy, by contour to by patch 
+            buf[cont_id].append((patch_x, patch_y))
+    tmp1 = np.vstack(buf)
+    buf = []
+#    tmp2 = np.array([(x,y) for i, (patch_x, patch_y) in enumerate(tmp) for x, y in zip(patch_x, patch_y)])
+    for patch_id, (patch_tuple) in enumerate(tmp1):
+        patch_x, patch_y = patch_tuple
+        buf.append([])
+        for x, y in zip(patch_x, patch_y):
+            buf[patch_id].append((x,y))
+        buf[patch_id] = np.array(buf[patch_id])
+    tmp2 = np.array(buf)
+
+    #detection_loc_all_patch.extend(detection_loc)
+    detection_loc_all_patch = tmp2
+#    detection_indices_all_patch.extend(v.container['detection_tc_positive_indices'])
+    buf = []
+    for cont_id, (tc_ind) in enumerate(v.container['detection_tc_positive_indices']):
+#        buf.append(tc_ind)
+        for patch_ind in tc_ind: # by contour to by patch 
+            #buf[cont_id].append(patch_ind)
+            buf.append(patch_ind)
+    tmp1 = np.array(buf)
+#    for patch_id, (patch_tuple) in enumerate(tmp1):
+#        patch_x, patch_y = patch_tuple
+#        buf.append([])
+#        for x, y in zip(patch_x, patch_y):
+#            buf[patch_id].append((x,y))
+#        buf[patch_id] = np.array(buf[patch_id])
+#    tmp2 = np.array(buf)
+    detection_indices_all_patch = tmp1
+
+
+ 
 
     target_level_detection = file['detection'].attrs.get('patch_level')
     patch_downsample = int(wsi.level_downsamples[target_level_detection])
@@ -627,7 +692,7 @@ def calculate_TPS(file_path, wsi_object):
     detection_loc_all_patch_ref_level = []
     detection_indices_all_patch_notempty = []
     for coord, detection_loc, detection_ind in zip(coords_all_patch, detection_loc_all_patch, detection_indices_all_patch):
-        if np.all(detection_loc == np.uint32(-1)): # 核の数が0だった場合、np.array([-1, -1], dtype=np.uint32)が入っている
+        if np.all(detection_loc == np.int32(-1)): # 核の数が0だった場合、np.array([-1, -1], dtype=np.int32)が入っている
             continue
         detection_loc = coord + detection_loc * patch_downsample  # level0での絶対座標に変換. coordはlevel0でのtopleft
         detection_loc_all_patch_ref_level.append(detection_loc)
@@ -696,7 +761,10 @@ def calculate_TPS(file_path, wsi_object):
 
 
     # segmapを囲み領域に限定する
-    mask_all = np.where((mask_all != 0), 1, 0).astype(np.uint8) # binary mask 0 or 1
+    mask_all[mask_all>0] = 1 #TODO slow
+#    mask_all = (mask_all*255).astype(np.uint8) # binary mask 0 or 255
+#    mask_all = (mask_all/255).astype(np.uint8) # binary mask 0 or 1
+    #mask_all = np.where((mask_all != 0), 1, 0).astype(np.uint8) # binary mask 0 or 1
     segmap = mask_all * segmap
 
     del mask_all

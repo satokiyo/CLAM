@@ -13,7 +13,7 @@ import h5py
 import math
 from wsi_core.wsi_utils import savePatchIter_bag_hdf5, initialize_hdf5_bag, coord_generator, save_hdf5, sample_indices, screen_coords, isBlackPatch, isWhitePatch, to_percentiles, HDFVisitor
 import itertools
-from wsi_core.util_classes import isInContourV1, isInContourV2, isInContourV3_Easy, isInContourV3_Hard, isInContourV3_Easy_5pt, Contour_Checking_fn
+from wsi_core.util_classes import isInContourV1, isInContourV2, isInContourV3_Easy, isInContourV3_Hard, isInContourV3_Easy_5pt, isInContourV3_Easy_13pt, Contour_Checking_fn
 from utils.file_utils import load_pkl, save_pkl
 from wsi_core.preprocessing import create_tile_generator, get_20x_zoom_level, process_slide, process_tile_index, optical_density, keep_tile, process_tile, normalize_staining, flatten_sample_tuple, flatten_sample, get_labels_df, preprocess, save_df, add_row_indices, sample, rdd_2_df, save_rdd_2_jpeg, save_2_jpeg, save_nonlabelled_sample_2_jpeg, save_labelled_sample_2_jpeg, save_jpeg_help
 Image.MAX_IMAGE_PIXELS = 933120000
@@ -475,7 +475,9 @@ class WholeSlideImage(object):
             elif contour_fn == 'basic':
                 cont_check_fn = isInContourV1(contour=cont)
             elif contour_fn == 'five_pt':
-                cont_check_fn = isInContourV3_Easy_5pt(contour=cont)
+                cont_check_fn = isInContourV3_Easy_5pt(contour=cont, patch_size=ref_patch_size[0], center_shift=0.5)
+            elif contour_fn == '13_pt':
+                cont_check_fn = isInContourV3_Easy_13pt(contour=cont, patch_size=ref_patch_size[0], center_shift=0.5)
             else:
                 raise NotImplementedError
         else:
@@ -572,103 +574,104 @@ class WholeSlideImage(object):
         fp_chunk_size = math.ceil(n_contours * 0.05)
 
         # group作成
-        f = open_hdf5_file(save_path_hdf5, mode='a')
-        create_hdf5_attrs(f, name='name', data=self.name) # create attrs at /
+        with open_hdf5_file(save_path_hdf5, mode='a') as f:
+            create_hdf5_attrs(f, name='name', data=self.name) # create attrs at /
 
-        targets = ['detection', 'segmentation']
-        for target in targets:
-            if target in f.keys():
-                grp = f[target]
-            else:
-                grp = create_hdf5_group(f, target) # create group at /target
+            targets = ['detection', 'segmentation']
+            for target in targets:
+                if target in f.keys():
+                    grp = f[target]
+                else:
+                    grp = create_hdf5_group(f, target) # create group at /target
 
-            # /detection or /segmentation : patch_level or patch_size or step_sizeが変更された場合、保存されているパッチ情報を全てリセットして再処理
-            if grp.attrs:
-                if (patch_level[target] != grp.attrs.get('patch_level')) or (patch_size != grp.attrs.get('patch_size') or (step_size != grp.attrs.get('step_size'))):
-                    grp.clear()
-                    grp.attrs.clear()
+                # /detection or /segmentation : patch_level or patch_size or step_sizeが変更された場合、保存されているパッチ情報を全てリセットして再処理
+                if grp.attrs:
+                    if (patch_level[target] != grp.attrs.get('patch_level')) or (patch_size != grp.attrs.get('patch_size') or (step_size != grp.attrs.get('step_size'))):
+                        grp.clear()
+                        grp.attrs.clear()
 
-            # create attrs at /target
-            attr = {'patch_size'            : patch_size, # patch_size. Not patch size in reference frame(level 0)
-                    'step_size'             : step_size,  # step_size. Not ref level(level 0)
-                    'patch_level'           : patch_level[target], # patch_level. Not ref level(level 0)
-                    'downsample'            : self.level_downsamples[patch_level[target]],
-                    'downsampled_level_dim' : tuple(np.array(self.level_dim[patch_level[target]])),
-                    'level_dim'             : self.level_dim[patch_level[target]],}
-            for name, data in attr.items():
-                create_hdf5_attrs(grp, name=name, data=data) 
+                # create attrs at /target
+                attr = {'patch_size'            : patch_size, # patch_size. Not patch size in reference frame(level 0)
+                        'step_size'             : step_size,  # step_size. Not ref level(level 0)
+                        'patch_level'           : patch_level[target], # patch_level. Not ref level(level 0)
+                        'downsample'            : self.level_downsamples[patch_level[target]],
+                        'downsampled_level_dim' : tuple(np.array(self.level_dim[patch_level[target]])),
+                        'level_dim'             : self.level_dim[patch_level[target]],}
+                for name, data in attr.items():
+                    create_hdf5_attrs(grp, name=name, data=data) 
 
-            cont_idx_processed = [s for s in grp] # ex: ["contour0", "contour1", "contour2"]
-            if cont_idx_processed:
-                cont_idx_offset = max([re.findall(r'\d+', s)[-1] for s in cont_idx_processed]) # ex: 2
-            else:
-                cont_idx_offset = -1
+                cont_idx_processed = [s for s in grp] # ex: ["contour0", "contour1", "contour2"]
+                if cont_idx_processed:
+                    cont_idx_offset = max([re.findall(r'\d+', s)[-1] for s in cont_idx_processed]) # contour number digit. ex: 2
+                else:
+                    cont_idx_offset = -1
 
 
-            # dataset読み込み。以下の階層にdatasetがある。
-            queries = ['coords_contour']
-            v = HDFVisitor(*queries)
-            grp.visititems(v)
-            processed_contours = v.container['coords_contour']
+                # dataset読み込み。以下の階層にdatasetがある。
+                queries = ['coords_contour']
+                v = HDFVisitor(*queries)
+                grp.visititems(v)
+                processed_contours = v.container['coords_contour']
 
-            def is_exist_ainb(a:list, b:list):
-                '''
-                list a の要素がlist bにも含まれる場合に、list a 該当要素のインデクスを返す 
-                '''
-                ret = []
-                for i, e1 in enumerate(a):
-                    for e2 in b:
-                        if np.all(e1 == e2):
-                            ret.append(i)
-                return ret
+                def is_exist_ainb(a:list, b:list):
+                    '''
+                    list a の要素がlist bにも含まれる場合に、list a 該当要素のインデクスを返す 
+                    '''
+                    ret = []
+                    for i, e1 in enumerate(a):
+                        for e2 in b:
+                            if np.all(e1 == e2):
+                                ret.append(i)
+                    return ret
 
-            to_skip_list = is_exist_ainb(a=self.contours_tissue, b=processed_contours) # 完了済のcontourにも含まれるcontourは処理しない
+                to_skip_list = is_exist_ainb(a=self.contours_tissue, b=processed_contours) # 完了済のcontourにも含まれるcontourは処理しない
 
-            # processed_contoursにのみあるcontourは.h5から削除(囲み修正or削除とみなす)
-            exist_both = is_exist_ainb(a=processed_contours, b=self.contours_tissue) # 両方にあるcontour
-            no_longer_exist = [idx for idx in range(len(processed_contours)) if idx not in exist_both] # processed_contoursにのみあるcontourは.h5から削除(囲み修正or削除とみなす)
-            for delete_idx in no_longer_exist:
-                to_delete = processed_contours[delete_idx]
-                for processed_cont in grp:
-                    if np.all(grp[processed_cont]['coords_contour'][:] == to_delete):
-                        grp[processed_cont].clear()
-                        del grp[processed_cont]
+                # processed_contoursにのみあるcontourは.h5から削除(囲み修正or削除とみなす)
+                exist_both = is_exist_ainb(a=processed_contours, b=self.contours_tissue) # 両方にあるcontour
+                no_longer_exist = [idx for idx in range(len(processed_contours)) if idx not in exist_both] # processed_contoursにのみあるcontourは.h5から削除(囲み修正or削除とみなす)
+                for delete_idx in no_longer_exist:
+                    to_delete = processed_contours[delete_idx]
+                    for processed_cont in grp:
+                        if np.all(grp[processed_cont]['coords_contour'][:] == to_delete):
+                            grp[processed_cont].clear()
+                            del grp[processed_cont]
 
-            # contour毎に処理
-            add_idx = 0
-            for idx_cont, cont in enumerate(self.contours_tissue): # contour coords at level0
-                if (idx_cont + 1) % fp_chunk_size == fp_chunk_size:
-                    print('Processing contour {}/{}'.format(idx_cont, n_contours))
+                # contour毎に処理
+                add_idx = 0
+                for idx_cont, cont in enumerate(self.contours_tissue): # contour coords at level0
+                    if (idx_cont + 1) % fp_chunk_size == fp_chunk_size:
+                        print('Processing contour {}/{}'.format(idx_cont, n_contours))
 
-                if idx_cont in to_skip_list:
-                    continue
-                add_idx += 1
+                    if idx_cont in to_skip_list:
+                        continue
+                    add_idx += 1
 
-                grp_cont = create_hdf5_group(grp, f'contour{int(cont_idx_offset) + add_idx}') # /target/contourxx contourの番号は追加順に増やしていく
-                create_hdf5_dataset(grp_cont, 'coords_contour', data=cont) # dataset at /target/contourxx/coords_contour
+                    grp_cont = create_hdf5_group(grp, f'contour{int(cont_idx_offset) + add_idx}') # /target/contourxx contourの番号は追加順に増やしていく
+                    create_hdf5_dataset(grp_cont, 'coords_contour', data=cont) # dataset at /target/contourxx/coords_contour
 
-                # パッチの取得
-                asset_dict = self.process_contour(cont, self.holes_tissue[idx_cont], patch_level[target], save_path, patch_size, step_size, **kwargs)
+                    # パッチの取得
+                    asset_dict = self.process_contour(cont, self.holes_tissue[idx_cont], patch_level[target], save_path, patch_size, step_size, **kwargs)
 
-                # save attrs
-                if len(asset_dict) > 0:
-                    # save assets per patch
-                    for idx_patch, coord in enumerate(asset_dict['coords']):
-                        grp_patch = create_hdf5_group(grp_cont, f'patch{idx_patch}') # /target/contourxx/patchxx
-                        create_hdf5_dataset(grp_patch, 'coord', data=coord) # dataset at /target/contourxx/patchxx/coord
-                else: # no patches for this cont
-                    # TODO
-                    pass
+                    # save 
+                    if len(asset_dict) > 0:
+                        # save assets per patch
+                        #for idx_patch, coord in enumerate(asset_dict['coords']):
+                        #    grp_patch = create_hdf5_group(grp_cont, f'patch{idx_patch}') # /target/contourxx/patchxx
+                        #    create_hdf5_dataset(grp_patch, 'coord', data=coord) # dataset at /target/contourxx/patchxx/coord
+                        create_hdf5_dataset(grp_cont, 'coords_patches', data=asset_dict['coords']) # dataset at /target/contourxx/coords_patches
+                    else: # no patches for this cont
+                        # TODO
+                        pass
     
-        debug=False
-        if debug:
-            def print_dataset(name, obj):
-                if isinstance(obj, h5py.Dataset):
-                    print(name)
-                    # print('\t',obj)
-            f.visititems(print_dataset)
+            debug=False
+            if debug:
+                def print_dataset(name, obj):
+                    if isinstance(obj, h5py.Dataset):
+                        print(name)
+                        # print('\t',obj)
+                f.visititems(print_dataset)
 
-        f.close()
+            f.close()
     
         self.hdf5_file = save_path_hdf5
 
@@ -730,6 +733,8 @@ class WholeSlideImage(object):
                 cont_check_fn = isInContourV1(contour=cont)
             elif contour_fn == 'five_pt':
                 cont_check_fn = isInContourV3_Easy_5pt(contour=cont, patch_size=ref_patch_size[0], center_shift=0.5)
+            elif contour_fn == '13_pt':
+                cont_check_fn = isInContourV3_Easy_13pt(contour=cont, patch_size=ref_patch_size[0], center_shift=0.5)
             else:
                 raise NotImplementedError
         else:

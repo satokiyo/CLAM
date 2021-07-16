@@ -57,7 +57,7 @@ class SegConfig():
 def forward_detection(file_path, wsi_object, patch_size, model_path): # forward using trained model and save info to .h5 file.
     '''
     file_pathからHDF5ファイルを読み込み、/detection以下の階層から各パッチの座標、detectionのforwardは完了しているか等の情報を参照する。
-    detectionの結果がないパッチのみ新たにforwardを実行し、detection結果をdatasetとして/detection/contourxx/patchxx/detection_loc以下に追加する
+    detectionの結果がないパッチのみ新たにforwardを実行し、detection結果をdatasetとして/detection/contourxx/detection_loc_x or _y以下に追加する
 
     Return:
       file_path
@@ -76,6 +76,7 @@ def forward_detection(file_path, wsi_object, patch_size, model_path): # forward 
     model.to(device)
     model.load_state_dict(torch.load(model_path, device))
     model.eval()
+    
 
     dataset = Whole_Slide_Bag_FP(file_path, wsi_object.getOpenSlide(), pretrained=False, custom_transforms=False, custom_downsample=1, target_patch_size=-1, target='detection')
     total = len(dataset)
@@ -86,75 +87,138 @@ def forward_detection(file_path, wsi_object, patch_size, model_path): # forward 
                                                num_workers=8,
                                                pin_memory=True if conf.gpu==1 else False)
 
-    dset_name = 'detection_loc'
-    f = open_hdf5_file(file_path, mode='a')
+    dset_name_x = 'detection_loc_x'
+    dset_name_y = 'detection_loc_y'
 
-    verbose=1
-    if verbose > 0:
-        ten_percent_chunk = math.ceil(total * 0.1)
+    with open_hdf5_file(file_path, mode='a') as f:
 
-    if conf.save: # save ROI overlay images
-        save_dir = Path(file_path).parent.parent / 'detection' / f.attrs.get('name')
-        if not save_dir.exists():
-            save_dir.mkdir(parents=True)
-    else:
-        save_dir = None
- 
-    for patch_id, (patch, coord, grp_name_parent) in enumerate(dataloader):
+        verbose=1
         if verbose > 0:
-            if patch_id % ten_percent_chunk == 0:
-                print('progress: {}/{} forward finished'.format(patch_id, total))
+            ten_percent_chunk = math.ceil(total * 0.1)
 
-        # 既に結果があるパッチは飛ばす
-        if dset_name in f[grp_name_parent[0]]:
-            continue
-        
-        inputs = patch.to(device)
-        with torch.set_grad_enabled(False):
-            if conf.deep_supervision:
-                outputs, intermediates = model(inputs)
-                del intermediates
-            else:
-                outputs = model(inputs)
-    
-        #print(f'estimated count {torch.sum(outputs).item()} cells')
-    
-        vis_img = outputs[0].detach().cpu().numpy()
-        del outputs
-        # normalize density map values from 0 to 1, then map it to 0-255.
-        vis_img = (vis_img - np.min(vis_img)) / np.ptp(vis_img)
-        vis_img2 = vis_img.copy()
-        vis_img = (vis_img*255).astype(np.uint8)
-        vis_img = vis_img.transpose(1,2,0) # channel last
-        vis_img = cv2.applyColorMap(vis_img, cv2.COLORMAP_VIRIDIS)
-        if conf.downsample_ratio > 1:
-            vis_img = cv2.resize(vis_img, dsize=(conf.input_size, conf.input_size), interpolation=cv2.INTER_NEAREST)
-            vis_img2 = cv2.resize(vis_img2, dsize=(conf.input_size, conf.input_size), interpolation=cv2.INTER_NEAREST)
-        
-        vis_img = vis_img[:,:,::-1] # convert to RGB
-        #vis_img = cv2.resize(vis_img, dsize=(int(self.conf.input_size), int(self.conf.input_size)), interpolation=cv2.INTER_NEAREST)
-        org_img = inputs[0].detach().cpu().numpy()
-        org_img = (org_img - np.min(org_img)) / np.ptp(org_img)
-        org_img = (org_img*255).astype(np.uint8)
-        org_img = org_img.transpose(1,2,0) # channel last
-        if (vis_img.shape[:2]) != (org_img.shape[:2]):
-            vis_img = vis_img.resize(org_img.shape[:2])
-        # overlay
-        overlay = np.uint8((org_img/2) + np.uint8(vis_img/2)) # RGB
-        coord = coord[0].detach().cpu().numpy()
-    
-        if save_dir: # save ROI overlay images
-            cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1])]) + '.jpg')), overlay.astype(np.uint8)[:,:,::-1])
-    
-        # detect/draw center point
-        centroids_per_patch = get_centroids(overlay, vis_img2.transpose(1,2,0),
-                                            tau=-1, org_img=org_img, name=str('_'.join([slide_id, str(coord[0]), str(coord[1])])),
-                                            save_dir=save_dir)
+        if conf.save: # save ROI overlay images
+            save_dir = Path(file_path).parent.parent / 'detection' / f.attrs.get('name')
+            if not save_dir.exists():
+                save_dir.mkdir(parents=True)
+        else:
+            save_dir = None
+ 
+        buf = {}
+        for patch_id, (patch, coord, grp_name_parent) in enumerate(dataloader):
+            if verbose > 0:
+                if patch_id % ten_percent_chunk == 0:
+                    print('progress: {}/{} forward finished'.format(patch_id, total))
 
-        # save nuclei locations as dataset
-        create_hdf5_dataset(f[grp_name_parent[0]], dset_name=dset_name, data=centroids_per_patch[:, [1,0]]) # reverse x,y
+            # 既に結果があるcontourのパッチは飛ばす(->途中でforwardを止めた場合でもcontourに対して一つでも結果があるとスキップしてしまう。その場合、.h5を削除してから再実行する必要がある)
+            if (dset_name_x in f[grp_name_parent[0]]) and (dset_name_y in f[grp_name_parent[0]]):
+                continue
+            
+            inputs = patch.to(device)
+            with torch.set_grad_enabled(False):
+                '''
+                #TODO tmp for onnx
+                if patch_id == 0:
+                    import pdb;pdb.set_trace()
+                    # Export the model
+                    torch.onnx.export(model,               # model being run
+                                      inputs,                         # model input (or a tuple for multiple inputs)
+                                      "detection_model.onnx",   # where to save the model (can be a file or file-like object)
+                                      export_params=True,        # store the trained parameter weights inside the model file
+                                      opset_version=9,          # the ONNX version to export the model to
+                                      do_constant_folding=True,  # whether to execute constant folding for optimization
+                                      input_names = ['input'],   # the model's input names
+                                      output_names = ['output'], # the model's output names
+                                      dynamic_axes={'input' : {0 : 'batch_size',
+                                                               2 : 'height',
+                                                               3 : 'width'},    # variable length axes
+                                                    'output' : {0 : 'batch_size',
+                                                                2 : 'height',
+                                                                3 : 'width'},    # variable length axes
+                                                    },
+                                      operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK
+                                      #operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN
+                                      #operator_export_type=torch.onnx.OperatorExportTypes.RAW
+                                      #operator_export_type=torch.onnx.OperatorExportTypes.ONNX_FALLTHROUGH
+                                      #operator_export_type=torch.onnx.OperatorExportTypes.ONNX
+                                                    )
+                '''
 
-    f.close()
+                if conf.deep_supervision:
+                    ## onnx
+                    #import onnxruntime as ort
+                    #import pdb;pdb.set_trace()
+                    #ort_session = ort.InferenceSession('/media/prostate/20210331_PDL1/CLAM/detection_model.onnx')
+                    #outputs = ort_session.run(None, {'actual_input_1': inputs})
+                    outputs, intermediates = model(inputs)
+                    del intermediates
+                else:
+                    ## onnx
+                    #outputs = ort_session.run(None, {'actual_input_1': inputs})
+                    outputs = model(inputs)
+    
+            #print(f'estimated count {torch.sum(outputs).item()} cells')
+    
+            vis_img = outputs[0].detach().cpu().numpy()
+            del outputs
+            # normalize density map values from 0 to 1, then map it to 0-255.
+            vis_img = (vis_img - np.min(vis_img)) / np.ptp(vis_img)
+            vis_img2 = vis_img.copy()
+            vis_img = (vis_img*255).astype(np.uint8)
+            vis_img = vis_img.transpose(1,2,0) # channel last
+            vis_img = cv2.applyColorMap(vis_img, cv2.COLORMAP_VIRIDIS)
+            if conf.downsample_ratio > 1:
+                vis_img = cv2.resize(vis_img, dsize=(conf.input_size, conf.input_size), interpolation=cv2.INTER_NEAREST)
+                vis_img2 = cv2.resize(vis_img2, dsize=(conf.input_size, conf.input_size), interpolation=cv2.INTER_NEAREST)
+            
+            vis_img = vis_img[:,:,::-1] # convert to RGB
+            #vis_img = cv2.resize(vis_img, dsize=(int(self.conf.input_size), int(self.conf.input_size)), interpolation=cv2.INTER_NEAREST)
+            org_img = inputs[0].detach().cpu().numpy()
+            org_img = (org_img - np.min(org_img)) / np.ptp(org_img)
+            org_img = (org_img*255).astype(np.uint8)
+            org_img = org_img.transpose(1,2,0) # channel last
+            if (vis_img.shape[:2]) != (org_img.shape[:2]):
+                vis_img = vis_img.resize(org_img.shape[:2])
+            # overlay
+            overlay = np.uint8((org_img/2) + np.uint8(vis_img/2)) # RGB
+            coord = coord[0].detach().cpu().numpy()
+    
+            if save_dir: # save ROI overlay images
+                cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1])]) + '.jpg')), overlay.astype(np.uint8)[:,:,::-1])
+    
+            # detect/draw center point
+            centroids_per_patch = get_centroids(overlay, vis_img2.transpose(1,2,0),
+                                                tau=-1, org_img=org_img, name=str('_'.join([slide_id, str(coord[0]), str(coord[1])])),
+                                                save_dir=save_dir)
+
+#            # save nuclei locations as dataset
+#            create_hdf5_dataset(f[grp_name_parent[0]], dset_name=dset_name, data=centroids_per_patch[:, [1,0]]) # reverse x,y
+            if grp_name_parent[0] not in buf.keys():
+                buf.setdefault(grp_name_parent[0], [])
+            buf[grp_name_parent[0]].append(centroids_per_patch[:, [1,0]]) # reverse x,y
+
+        f.close()
+
+    # save nuclei locations as dataset
+    for i_cont, v_cont in buf.items():
+        #v = np.array([(e.astype(np.int32)) for e in v])
+        vx = []
+        vy = []
+        for i_patch, v_patch in enumerate(v_cont):
+            vx.append([])
+            vy.append([])
+            for v_loc in v_patch:
+                vx[i_patch].append(v_loc[0])
+                vy[i_patch].append(v_loc[1])
+            vx[i_patch] = np.array(vx[i_patch]).astype(np.int32)
+            vy[i_patch] = np.array(vy[i_patch]).astype(np.int32)
+#           vx = np.array([e.T[0].astype(np.int32) for e in v])
+#           vy = np.array([e.T[1].astype(np.int32) for e in v])
+        dt = h5py.vlen_dtype(np.dtype('int32'))
+        with open_hdf5_file(file_path, mode='a') as f:
+            create_hdf5_dataset(f[i_cont], dset_name=dset_name_x, data=np.array(vx), data_type=dt) # contour毎にdataset作成
+            create_hdf5_dataset(f[i_cont], dset_name=dset_name_y, data=np.array(vy), data_type=dt) # contour毎にdataset作成
+
+            f.close()
 
     return file_path
 
@@ -194,67 +258,78 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
                                                pin_memory=True if conf.gpu==1 else False)
 
     dset_name = 'segmap'
-    f = open_hdf5_file(file_path, mode='a')
+    with open_hdf5_file(file_path, mode='a') as f:
 
-    verbose=1
-    if verbose > 0:
-        ten_percent_chunk = math.ceil(total * 0.1)
-
-    if conf.save: # save ROI overlay images
-        save_dir = Path(file_path).parent.parent / 'segmentation' / f.attrs.get('name')
-        if not save_dir.exists():
-            save_dir.mkdir(parents=True)
-    else:
-        save_dir = None
-
-
-    for patch_id, (patch, coord, grp_name_parent) in enumerate(dataloader):
+        verbose=1
         if verbose > 0:
-            if patch_id % ten_percent_chunk == 0:
-                print('progress: {}/{} forward finished'.format(patch_id, total))
+            ten_percent_chunk = math.ceil(total * 0.1)
 
-        # 既に結果があるパッチは飛ばす
-        if dset_name in f[grp_name_parent[0]]:
-            continue
-        
-        inputs = patch.to(device)
-        with torch.set_grad_enabled(False):
-            if conf.deep_supervision:
-                outputs, intermediates = model(inputs)
-                del intermediates
-            else:
-                outputs = model(inputs)
+        if conf.save: # save ROI overlay images
+            save_dir = Path(file_path).parent.parent / 'segmentation' / f.attrs.get('name')
+            if not save_dir.exists():
+                save_dir.mkdir(parents=True)
+        else:
+            save_dir = None
 
-            # save segmentation map as dataset
-            vis_img = outputs[0].detach().cpu().numpy()
 
-            # normalize density map values from 0 to 1, then map it to 0-255.
-            vis_img = (vis_img - np.min(vis_img)) / np.ptp(vis_img)
-            vis_img = (vis_img*255).astype(np.uint8)
-            vis_map = np.argmax(vis_img, axis=0)
-            create_hdf5_dataset(f[grp_name_parent[0]], dset_name=dset_name, data=vis_map)
-            # save image
-            if save_dir:
-                PALETTE = conf.palette
-                vis_map = Image.fromarray(vis_map.astype(np.uint8), mode="P")
-                vis_map.putpalette(PALETTE)
-                org_img = inputs[0].detach().cpu().numpy().transpose(1,2,0)
-                del outputs
-                del inputs
-                org_img = (org_img - np.min(org_img)) / np.ptp(org_img)
-                org_img = (org_img*255).astype(np.uint8)
-                if (vis_map.size) != (org_img.shape[:1]):
-                    vis_map = vis_map.resize(org_img.shape[:2])
-                vis_map = np.array(vis_map.convert("RGB"))
-     
-                # overlay
-                overlay = np.uint8((org_img/2) + (vis_map/2))
+        buf = {}
+        for patch_id, (patch, coord, grp_name_parent) in enumerate(dataloader):
+            if verbose > 0:
+                if patch_id % ten_percent_chunk == 0:
+                    print('progress: {}/{} forward finished'.format(patch_id, total))
 
-                # save
-                coord = coord[0].detach().cpu().numpy()
-                cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1])]) + '.jpg')), overlay.astype(np.uint8)[:,:,::-1])
+            # 既に結果があるcontourのパッチは飛ばす(->途中でforwardを止めた場合でもcontourに対して一つでも結果があるとスキップしてしまう。その場合、.h5を削除してから再実行する必要がある)
+            if dset_name in f[grp_name_parent[0]]:
+                continue
+            
+            inputs = patch.to(device)
+            with torch.set_grad_enabled(False):
+                if conf.deep_supervision:
+                    outputs, intermediates = model(inputs)
+                    del intermediates
+                else:
+                    outputs = model(inputs)
 
-    f.close()
+                # save segmentation map as dataset
+                vis_img = outputs[0].detach().cpu().numpy()
+
+                # normalize density map values from 0 to 1, then map it to 0-255.
+                vis_img = (vis_img - np.min(vis_img)) / np.ptp(vis_img)
+                vis_img = (vis_img*255).astype(np.uint8)
+                vis_map = np.argmax(vis_img, axis=0)
+#                create_hdf5_dataset(f[grp_name_parent[0]], dset_name=dset_name, data=vis_map)
+                if grp_name_parent[0] not in buf.keys():
+                    buf.setdefault(grp_name_parent[0], [])
+                buf[grp_name_parent[0]].append(vis_map)
+
+                # save image
+                if save_dir:
+                    PALETTE = conf.palette
+                    vis_map = Image.fromarray(vis_map.astype(np.uint8), mode="P")
+                    vis_map.putpalette(PALETTE)
+                    org_img = inputs[0].detach().cpu().numpy().transpose(1,2,0)
+                    del outputs
+                    del inputs
+                    org_img = (org_img - np.min(org_img)) / np.ptp(org_img)
+                    org_img = (org_img*255).astype(np.uint8)
+                    if (vis_map.size) != (org_img.shape[:1]):
+                        vis_map = vis_map.resize(org_img.shape[:2])
+                    vis_map = np.array(vis_map.convert("RGB"))
+         
+                    # overlay
+                    overlay = np.uint8((org_img/2) + (vis_map/2))
+
+                    # save
+                    coord = coord[0].detach().cpu().numpy()
+                    cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1])]) + '.jpg')), overlay.astype(np.uint8)[:,:,::-1])
+        f.close()
+
+
+    # save segmap as dataset
+    for k, v in buf.items():
+        with open_hdf5_file(file_path, mode='a') as f:
+            create_hdf5_dataset(f[k], dset_name=dset_name, data=np.array(v).astype(np.uint8)) # contour毎にdataset作成
+            f.close()
 
     return file_path
 
@@ -314,11 +389,11 @@ def get_centroids(img, liklihoodmap, tau=-1, org_img=None, name=None, save_dir=N
         cX = int(M["m10"] / (M["m00"] + 1e-5))
         cY = int(M["m01"] / (M["m00"] + 1e-5))
         center.append(np.array([cX, cY]))
-    center = np.array(center).astype(np.uint32)
+    center = np.array(center).astype(np.int32)
     if len(center) == 0:
         print("count zero!!")
         print(f'ncenters: {len(center)}')
-        centroids_wrt_orig = np.array([[-1, -1]]).astype(np.uint32)
+        centroids_wrt_orig = np.array([[-1, -1]]).astype(np.int32)
     else:
         centroids_wrt_orig = center[:,[1,0]]
         print(f'ncenters: {len(center)}')
@@ -348,137 +423,172 @@ def detect_tc_positive_nuclei(file_path, wsi_object, intensity_thres=175, area_t
       file_path
     '''
 
-    f = open_hdf5_file(file_path, mode='a')
+    with open_hdf5_file(file_path, mode='a') as f:
 
-    attr_dict = {
-                   'intensity_thres' : intensity_thres,
-                   'area_thres'      : area_thres,
-                   'radius'          : radius,
-                 }
-
-
-    # 閾値のattrがない場合(一回目の処理)、attrに設定する
-    count = 0
-    for attr_name, thres in attr_dict.items():
-        if not attr_name in f['/detection'].attrs:                  # 一回目
-            create_hdf5_attrs(f['/detection'], attr_name, thres)
-        else:                                                       # 一回目以外：既にattrがあり変更されていない
-            if f['/detection'].attrs.get(attr_name) == attr_dict[attr_name]:
-                count+=1
-    if count == len(attr_dict.keys()): # 閾値が一つも変更されていない
-        skip_flag=True
-    else:
-        skip_flag=False
-
-
-    dataset = Whole_Slide_Bag_FP(file_path, wsi_object.getOpenSlide(), 
-                                   pretrained=False, custom_transforms=False, custom_downsample=1, target_patch_size=-1,
-                                   target='detection', detection_loc=True, skip_flag=skip_flag) # detection_loc=True returns detected nuclei locations
-    total = len(dataset)
-    slide_id = dataset.slide_id
-    dataloader = torch.utils.data.DataLoader(dataset,
-                                               batch_size=1,
-                                               shuffle=False,
-                                               num_workers=8,
-                                               pin_memory=False)
-
-    conf = Config()
-    if conf.save: # save ROI overlay images
-        save_dir = Path(file_path).parent.parent / 'detection' / f.attrs.get('name')
-        if not save_dir.exists():
-            save_dir.mkdir(parents=True)
-    else:
-        save_dir = None
-
-    verbose=1
-    if verbose > 0:
-        ten_percent_chunk = math.ceil(total * 0.1)
-
-    #for patch_id, (patch, coord, grp_name_parent, detection_loc) in enumerate(dataloader):
-    for patch_id, (data) in enumerate(dataloader):
+        attr_dict = {
+                       'intensity_thres' : intensity_thres,
+                       'area_thres'      : area_thres,
+                       'radius'          : radius,
+                     }
+    
+    
+        # 閾値のattrがない場合(一回目の処理)、attrに設定する
+        count = 0
+        for attr_name, thres in attr_dict.items():
+            if not attr_name in f['/detection'].attrs:                  # 一回目
+                create_hdf5_attrs(f['/detection'], attr_name, thres)
+            else:                                                       # 一回目以外
+                if f['/detection'].attrs.get(attr_name) == thres:       # 既にattrがあり変更されていない
+                    count+=1
+                else:                                                   # modified 
+                    # update attr
+                    #if type(data) == str:
+                    #    f['/detection'].attrs.modify(attr_name, data.encode("utf-8"))
+                    #else:
+                    f['/detection'].attrs.modify(attr_name, thres)
+                    print(f"update attr {attr_name} to : {thres}")
+     
+                    #create_hdf5_attrs(f['/detection'], attr_name, thres)
+        if count == len(attr_dict.keys()): # 閾値が一つも変更されていない
+            skip_flag=True
+        else:
+            skip_flag=False
+        print(f"skip flag   {skip_flag}")
+    
+    
+        dataset = Whole_Slide_Bag_FP(file_path, wsi_object.getOpenSlide(), 
+                                       pretrained=False, custom_transforms=False, custom_downsample=1, target_patch_size=-1,
+                                       target='detection', detection_loc=True, skip_flag=skip_flag) # detection_loc=True returns detected nuclei locations
+        total = len(dataset)
+        slide_id = dataset.slide_id
+        dataloader = torch.utils.data.DataLoader(dataset,
+                                                   batch_size=1,
+                                                   shuffle=False,
+                                                   num_workers=8,
+                                                   pin_memory=False)
+    
+        conf = Config()
+        if conf.save: # save ROI overlay images
+            save_dir = Path(file_path).parent.parent / 'detection' / f.attrs.get('name')
+            if not save_dir.exists():
+                save_dir.mkdir(parents=True)
+        else:
+            save_dir = None
+    
+        verbose=1
         if verbose > 0:
-            if patch_id % ten_percent_chunk == 0:
-                print('progress: {}/{} TC(+)count finished'.format(patch_id, total))
-        if data:
-            patch, coord, grp_name_parent, detection_loc = data
-        else: # 閾値が一つも変更されていない場合、かつ既に結果があるパッチは0が返ってくる
-            continue
-
-#        # 閾値が一つも変更されていない場合、かつ既に結果があるパッチは飛ばす
-#        if skip_flag > 0:
-#            if ('detection_dab_intensity' in f[grp_name_parent[0]]) and ('detection_tc_positive_indices' in f[grp_name_parent[0]]):
-#                 continue
-
-        # 核の検出数が0だったパッチは処理しない
-        detection_locs = np.array(detection_loc)[:]
-        if (len(detection_locs)==1) and (np.all(detection_loc[0] == np.uint32(-1))): # 核の数が0だった場合、np.array([-1, -1], dtype=np.uint32)が入っている
-            img = patch.to('cpu').numpy().squeeze(0).transpose(1,2,0)
-            create_hdf5_dataset(f[grp_name_parent[0]], dset_name='detection_dab_intensity', data=np.zeros((img.shape[:2])).astype(np.uint8))
-            create_hdf5_dataset(f[grp_name_parent[0]], dset_name='detection_tc_positive_indices', data=np.array([]))
-            continue
-
-        coord = coord[0].detach().cpu().numpy()
-        with torch.set_grad_enabled(False):
-            img = patch.to('cpu').numpy().squeeze(0).transpose(1,2,0)
-            img = (img - np.min(img)) / np.ptp(img)
-            img = (img*255).astype(np.uint8)
-
-            img_draw_volonoi = img.copy()
-            img_draw_DAB = img.copy()
-            org_img_copy = img.copy().astype(np.float32)
-
-            R = org_img_copy[:,:,0] # R-ch
-            G = org_img_copy[:,:,1] # G-ch
-            B = org_img_copy[:,:,2] # B-ch
-            BN = 255*np.divide(B, (B+G+R), out=np.zeros_like(B), where=(B+G+R)!=0) # ref.paper : Automated Selection of DAB-labeled Tissue for Immunohistochemical Quantification
-            DAB = 255 - BN
-            #if save_dir:
-            #    cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1]), 'BN.jpg']))), BN.astype(np.uint8))
-            #    cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1]), 'DAB.jpg']))), DAB.astype(np.uint8))
-
-            # voronoi
-            rect = (0, 0, img.shape[0], img.shape[1])
-            subdiv = cv2.Subdiv2D(rect)
-            for p in detection_locs:
-                subdiv.insert((int(p[0]), int(p[1])))
-            facets, centers = subdiv.getVoronoiFacetList([])
-            #if save_dir:
-            #    cv2.polylines(img_draw_volonoi, [f.astype(int) for f in facets], True, (255, 255, 255), thickness=2) # draw voronoi
-            #    cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1]), 'volonoi.jpg']))), img_draw_volonoi.astype(np.uint8)[:,:,::-1])
+            ten_percent_chunk = math.ceil(total * 0.1)
     
-            # voronoi with restricted radius
-            mat = np.zeros((img.shape[0], img.shape[1]), np.uint8)
-            facets = [f.astype(int) for f in facets]
-            detection_tc_positive_indices = []
-            for i, (center, points) in enumerate(zip(centers, facets)):
-                mask1 = cv2.fillPoly(mat.copy(), [points], (255)) # make binary mask
-                mask2 = cv2.circle(mat.copy(),(int(center[0]), int(center[1])), radius, (255), -1)
-                intersection = mask1 & mask2
-                con, hierarchy = cv2.findContours(intersection,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
-                # Create a mask image that contains the contour filled in
-                mask3 = np.zeros_like(mat, np.uint8)
-                mask3 = cv2.drawContours(mask3, con, -1, 255, 1)
-                contour_area = np.count_nonzero(mask3) # 後で使うpixel単位面積
-                mask4 = (mask3==255).astype(np.uint8) # contour region mask
-                contour_DAB = DAB * mask4
-                over_thres_area = np.count_nonzero(contour_DAB > intensity_thres)
+        #for patch_id, (patch, coord, grp_name_parent, detection_loc) in enumerate(dataloader):
+        buf1 = {} # detection_dab_intensity
+        buf2 = {} # detection_tc_positive_indices
+        for patch_id, (data) in enumerate(dataloader):
+            if verbose > 0:
+                if patch_id % ten_percent_chunk == 0:
+                    print('progress: {}/{} TC(+)count finished'.format(patch_id, total))
+            if data:
+                patch, coord, grp_name_parent, detection_loc = data
+            else: # 閾値が一つも変更されていない場合、かつ既に結果があるcontourのパッチは0が返ってくる
+                continue
     
-                if (over_thres_area / contour_area) > area_thres: # 1-NonNucleusArea > 0.1
-                    #描画
-                    img_draw_DAB = cv2.drawContours(img_draw_DAB , con, -1, (255,0,0), 1) # red
-                    detection_tc_positive_indices.append(i)
-                else:
-                    img_draw_DAB = cv2.drawContours(img_draw_DAB , con, -1, (0,180,180), 1) # cyan
+    #        # 閾値が一つも変更されていない場合、かつ既に結果があるパッチは飛ばす
+    #        if skip_flag > 0:
+    #            if ('detection_dab_intensity' in f[grp_name_parent[0]]) and ('detection_tc_positive_indices' in f[grp_name_parent[0]]):
+    #                 continue
     
-                img_draw_volonoi = cv2.drawContours(img_draw_volonoi, con, -1, (0,255,0), 1) # draw voronoi with restricted redius
+            # 核の検出数が0だったパッチは処理しない
+            detection_locs = detection_loc.squeeze(0).numpy()
+            if (len(detection_locs)==1) and (np.all(detection_locs[0] == np.int32(-1))): # 核の数が0だった場合、np.array([-1, -1], dtype=np.int32)が入っている
+                img = patch.to('cpu').numpy().squeeze(0).transpose(1,2,0)
+                if grp_name_parent[0] not in buf1.keys():
+                    buf1.setdefault(grp_name_parent[0], [])
+                if grp_name_parent[0] not in buf2.keys():
+                    buf2.setdefault(grp_name_parent[0], [])
+                buf1[grp_name_parent[0]].append(np.zeros((img.shape[:2])).astype(np.uint8))
+                buf2[grp_name_parent[0]].append(np.array([]))
+    #            create_hdf5_dataset(f[grp_name_parent[0]], dset_name='detection_dab_intensity', data=np.zeros((img.shape[:2])).astype(np.uint8))
+    #            create_hdf5_dataset(f[grp_name_parent[0]], dset_name='detection_tc_positive_indices', data=np.array([]))
+                continue
+    
+            coord = coord[0].detach().cpu().numpy()
+            with torch.set_grad_enabled(False):
+                img = patch.to('cpu').numpy().squeeze(0).transpose(1,2,0)
+                img = (img - np.min(img)) / np.ptp(img)
+                img = (img*255).astype(np.uint8)
+    
+                img_draw_volonoi = img.copy()
+                img_draw_DAB = img.copy()
+                org_img_copy = img.copy().astype(np.float32)
+    
+                R = org_img_copy[:,:,0] # R-ch
+                G = org_img_copy[:,:,1] # G-ch
+                B = org_img_copy[:,:,2] # B-ch
+                BN = 255*np.divide(B, (B+G+R), out=np.zeros_like(B), where=(B+G+R)!=0) # ref.paper : Automated Selection of DAB-labeled Tissue for Immunohistochemical Quantification
+                DAB = 255 - BN
+                #if save_dir:
+                #    cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1]), 'BN.jpg']))), BN.astype(np.uint8))
+                #    cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1]), 'DAB.jpg']))), DAB.astype(np.uint8))
+    
+                # voronoi
+                rect = (0, 0, img.shape[0], img.shape[1])
+                subdiv = cv2.Subdiv2D(rect)
+                for p in detection_locs:
+                    subdiv.insert((int(p[0]), int(p[1])))
+                facets, centers = subdiv.getVoronoiFacetList([])
+                #if save_dir:
+                #    cv2.polylines(img_draw_volonoi, [f.astype(int) for f in facets], True, (255, 255, 255), thickness=2) # draw voronoi
+                #    cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1]), 'volonoi.jpg']))), img_draw_volonoi.astype(np.uint8)[:,:,::-1])
+        
+                # voronoi with restricted radius
+                mat = np.zeros((img.shape[0], img.shape[1]), np.uint8)
+                facets = [f.astype(int) for f in facets]
+                detection_tc_positive_indices = []
+                for i, (center, points) in enumerate(zip(centers, facets)):
+                    mask1 = cv2.fillPoly(mat.copy(), [points], (255)) # make binary mask
+                    mask2 = cv2.circle(mat.copy(),(int(center[0]), int(center[1])), radius, (255), -1)
+                    intersection = mask1 & mask2
+                    con, hierarchy = cv2.findContours(intersection,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+                    # Create a mask image that contains the contour filled in
+                    mask3 = np.zeros_like(mat, np.uint8)
+                    mask3 = cv2.drawContours(mask3, con, -1, 255, 1)
+                    contour_area = np.count_nonzero(mask3) # 後で使うpixel単位面積
+                    mask4 = (mask3==255).astype(np.uint8) # contour region mask
+                    contour_DAB = DAB * mask4
+                    over_thres_area = np.count_nonzero(contour_DAB > intensity_thres)
+        
+                    if (over_thres_area / contour_area) > area_thres: # 1-NonNucleusArea > 0.1
+                        #描画
+                        img_draw_DAB = cv2.drawContours(img_draw_DAB , con, -1, (255,0,0), 1) # red
+                        detection_tc_positive_indices.append(i)
+                    else:
+                        img_draw_DAB = cv2.drawContours(img_draw_DAB , con, -1, (0,180,180), 1) # cyan
+        
+                    img_draw_volonoi = cv2.drawContours(img_draw_volonoi, con, -1, (0,255,0), 1) # draw voronoi with restricted redius
+    
+                if save_dir:
+                    #cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1]), 'volonoi.jpg']))), img_draw_volonoi.astype(np.uint8)[:,:,::-1]) 
+                    cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1]), 'DAB.jpg']))), img_draw_DAB.astype(np.uint8)[:,:,::-1])
+    
+    #            create_hdf5_dataset(f[grp_name_parent[0]], dset_name='detection_dab_intensity', data=DAB.astype(np.uint8))
+    #            create_hdf5_dataset(f[grp_name_parent[0]], dset_name='detection_tc_positive_indices', data=np.array(detection_tc_positive_indices))
+                if grp_name_parent[0] not in buf1.keys():
+                    buf1.setdefault(grp_name_parent[0], [])
+                if grp_name_parent[0] not in buf2.keys():
+                    buf2.setdefault(grp_name_parent[0], [])
+                buf1[grp_name_parent[0]].append(DAB.astype(np.uint8))
+                buf2[grp_name_parent[0]].append(np.array(detection_tc_positive_indices))
 
-            if save_dir:
-                #cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1]), 'volonoi.jpg']))), img_draw_volonoi.astype(np.uint8)[:,:,::-1]) 
-                cv2.imwrite(os.path.join(save_dir, str('_'.join([slide_id, str(coord[0]), str(coord[1]), 'DAB.jpg']))), img_draw_DAB.astype(np.uint8)[:,:,::-1])
+        f.close()
+    
+    # save dataset
+    for (k1, v1), (k2, v2) in zip(buf1.items(), buf2.items()):
+        with open_hdf5_file(file_path, mode='a') as f:
+            create_hdf5_dataset(f[k1], dset_name='detection_dab_intensity', data=np.array(v1)) # contour毎にdataset作成
+            v2 = np.array([e.astype(np.int32) for e in v2])
+            dt = h5py.vlen_dtype(np.dtype('int32'))
+            v2 = v2.astype(dt)
+            create_hdf5_dataset(f[k2], dset_name='detection_tc_positive_indices', data=v2, data_type=dt) # contour毎にdataset作成
 
-            create_hdf5_dataset(f[grp_name_parent[0]], dset_name='detection_dab_intensity', data=DAB.astype(np.uint8))
-            create_hdf5_dataset(f[grp_name_parent[0]], dset_name='detection_tc_positive_indices', data=np.array(detection_tc_positive_indices))
-
-    f.close()
+            f.close()
 
     return file_path
