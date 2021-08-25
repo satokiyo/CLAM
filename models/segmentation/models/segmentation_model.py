@@ -6,7 +6,12 @@ from itertools import chain
 class SegModel(nn.Module):
     def __init__(self, args):
         super(SegModel, self).__init__()
-        encoder_weights=None #"imagenet" to download
+        encoder_weights=None if args.resume else 'imagenet'
+        if encoder_weights is not None:
+            if args.encoder_name in ["resnext101_32x4d"]:
+                encoder_weights="ssl"
+            elif "efficientnetv2" in args.encoder_name:
+                encoder_weights=None
         self.model = Unet(
             encoder_name=args.encoder_name,
             encoder_weights=encoder_weights,

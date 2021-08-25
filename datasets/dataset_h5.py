@@ -191,6 +191,8 @@ class Whole_Slide_Bag_FP(Dataset):
                 self.detection_loc_x_patches = None
                 self.detection_loc_y_patches = None
                 self.names_detection_loc_patches = None
+            f.flush()
+            f.close()
 
         self.summary()
             
@@ -222,6 +224,7 @@ class Whole_Slide_Bag_FP(Dataset):
                 with h5py.File(self.file_path, "r") as f:
                 #f = open_hdf5_file(self.file_path, mode="r")
                     if ('detection_dab_intensity' in f[grp_name_parent]) and ('detection_tc_positive_indices' in f[grp_name_parent]):
+                        f.flush()
                         f.close()
                         return 0
 

@@ -7,7 +7,6 @@ from ._preprocessing import preprocess_input
 encoders = {}
 encoders.update(senet_encoders)
 
-
 def get_encoder(name, in_channels=3, depth=5, weights=None):
 
     try:

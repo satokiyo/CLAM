@@ -20,9 +20,9 @@ Image.MAX_IMAGE_PIXELS = 933120000
 from pathlib import Path
 from utils.file_utils import create_hdf5_group, create_hdf5_dataset, create_hdf5_attrs, open_hdf5_file
 import re
+import gc
 
 import pdb
-
 
 class WholeSlideImage(object):
     def __init__(self, path):
@@ -267,6 +267,7 @@ class WholeSlideImage(object):
             img_bin = np.zeros((img_gray.shape), dtype=np.uint8)
             img_bin[img_med >= thres] = 255
             print(f"th_otsu_sat : {thres}")
+            self.sat_thres = thres
         else:
             _, img_bin = cv2.threshold(img_med, sthresh, sthresh_up, cv2.THRESH_BINARY)
 
@@ -533,7 +534,7 @@ class WholeSlideImage(object):
             else:
                 return 1
         return 0
-    
+
     @staticmethod
     def scaleContourDim(contours, scale):
         return [np.array(cont * scale, dtype='int32') for cont in contours]
@@ -671,7 +672,9 @@ class WholeSlideImage(object):
                         # print('\t',obj)
                 f.visititems(print_dataset)
 
+            f.flush()
             f.close()
+            gc.collect()
     
         self.hdf5_file = save_path_hdf5
 
@@ -760,7 +763,14 @@ class WholeSlideImage(object):
         results = pool.starmap(WholeSlideImage.process_coord_candidate, iterable)
         pool.close()
         results = np.array([result for result in results if result is not None])
-        
+
+        args = [(self.path, coord, ref_patch_size, self.sat_thres, 0.05) for coord in results]
+        pool = mp.Pool(8)
+        results = pool.map(isTissueArea, args) # 組織領域が5%以下のROIは処理しない
+        pool.close()
+        pool.join()
+        results = np.array([result for result in results if result is not None])
+
         print('Extracted {} coordinates'.format(len(results)))
 
         if len(results)>1:
@@ -1030,5 +1040,26 @@ class WholeSlideImage(object):
         return tissue_mask
 
 
+def isTissueArea(args):
+    path, coord, ref_patch_size, sat_thres, area_thres = args
+    wsi = openslide.open_slide(path) # Open Whole-Slide Image
+    img = np.array(wsi.read_region(coord, 0, ref_patch_size).convert("RGB"))
+    img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA)
+#       img_gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
+    img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)  # Convert to HSV space
+    img_med = img_hsv[:,:,1]
+#       img_bin = np.zeros((img_gray.shape), dtype=np.uint8)
+    img_bin = np.zeros((img_med.shape), dtype=np.uint8)
+    img_bin[img_med >= sat_thres] = 255
+    h,w = img_bin.shape[:2]
+    tissue = np.count_nonzero(img_bin==255)
+    all_pixel = h*w
+    del img, img_hsv, img_med, img_bin, wsi
+    if (tissue/all_pixel) > area_thres: # 組織が5%以上あったROIは処理する
+        print('tissue area over area_thres')
+        return coord
+    else:
+        print('tissue area under area_thres')
+        return None
 
 

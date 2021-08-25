@@ -44,17 +44,24 @@ def create_hdf5_group(h5py_obj, group_name):
         return h5py_obj.create_group(group_name)
 
 
-def create_hdf5_dataset(h5py_obj, dset_name, data, data_type=None):
+def create_hdf5_dataset(h5py_obj, dset_name, data, data_type=None, append=False):
     if dset_name in h5py_obj:
-        del h5py_obj[dset_name]
-        print(f"update dataset {dset_name}")
+        if not append:
+            del h5py_obj[dset_name]
+            print(f"update dataset {dset_name}")
     data_shape = data.shape
     if not data_type:
         data_type = data.dtype
-    #chunk_shape = (1, ) + data_shape[1:]
-    #maxshape = (None, ) + data_shape[1:]
-    h5py_obj.create_dataset(dset_name, shape=data_shape, dtype=data_type, data=data) # maxshape=maxshape, chunks=chunk_shape, dtype=data_type)
-    print(f"create dataset {dset_name}")
+    if append and (dset_name in h5py_obj):
+        dset = h5py_obj[dset_name]
+        dset.resize(len(dset) + data_shape[0], axis=0)
+        dset[-data_shape[0]:] = data
+        print(f"append dataset {dset_name}")
+    else:
+        chunk_shape = (1, ) + data_shape[1:]
+        maxshape = (None, ) + data_shape[1:]
+        h5py_obj.create_dataset(dset_name, shape=data_shape, maxshape=maxshape, chunks=chunk_shape, dtype=data_type, data=data) # maxshape=maxshape, chunks=chunk_shape, dtype=data_type)
+        print(f"create dataset {dset_name}")
  
 
 def create_hdf5_attrs(h5py_obj, name, data):

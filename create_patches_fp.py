@@ -2,6 +2,7 @@
 from wsi_core.WholeSlideImage import WholeSlideImage
 from wsi_core.wsi_utils import StitchCoords, StitchPatches, calculate_TPS
 from wsi_core.batch_process_utils import initialize_df
+from forward.forward import forward_detection, detect_tc_positive_nuclei, forward_segmentation
 # other imports
 import os
 import numpy as np
@@ -11,8 +12,10 @@ import pdb
 import pandas as pd
 from PIL import Image
 import cv2
+import gc
+from pathlib import Path
 
-def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_dir, 
+def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, mask_save_dir, stitch_save_dir, 
                   patch_size = 256, step_size = 256, 
                   seg_params = {'seg_level': -1, 'sthresh': 8, 'mthresh': 7, 'close': 4, 'use_otsu': False,
                   'keep_ids': 'none', 'exclude_ids': 'none'},
@@ -27,14 +30,20 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                   patch = False, auto_skip=True, process_list = None,
                   model_path_detection='', model_path_segmentation='',
                   intensity_thres=175, area_thres=0.1, radius=25):
-    
 
+    slides = sorted(os.listdir(source_slides))
+    slides = [slide for slide in slides if os.path.isfile(os.path.join(source_slides, slide)) and slide.split('.')[-1] in ['ndpi', 'svs']]
+    xmls = sorted(os.listdir(source_annotations))
+    target_names = [xml.split('.')[0] for xml in xmls if os.path.isfile(os.path.join(source_annotations, xml)) and xml.split('.')[-1] in ['ndpa', 'xml']]
+    tmp = []
+    for slide in slides[:]:
+        if slide.split('.')[0] in target_names:
+            tmp.append(slide)
+    slides = tmp
+    print(slides)
 
-    slides = sorted(os.listdir(source))
-    slides = [slide for slide in slides if os.path.isfile(os.path.join(source, slide)) and slide.split('.')[-1] in ['ndpi', 'svs']]
     if process_list is None:
         df = initialize_df(slides, seg_params, filter_params, vis_params, patch_params)
-    
     else:
         df = pd.read_csv(process_list)
         df = initialize_df(df, seg_params, filter_params, vis_params, patch_params)
@@ -64,7 +73,7 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
             continue
 
         # Inialize WSI
-        full_path = os.path.join(source, slide)
+        full_path = os.path.join(source_slides, slide)
         WSI_object = WholeSlideImage(full_path)
 
         # patch level(openslide mag_idx)の決定
@@ -85,13 +94,11 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
             current_filter_params = filter_params.copy()
             current_seg_params = seg_params.copy()
             current_patch_params = patch_params.copy()
-            
         else:
             current_vis_params = {}
             current_filter_params = {}
             current_seg_params = {}
             current_patch_params = {}
-
 
             for key in vis_params.keys():
                 current_vis_params.update({key: df.loc[idx, key]})
@@ -108,20 +115,20 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
         if current_vis_params['vis_level'] < 0:
             if len(WSI_object.level_dim) == 1:
                 current_vis_params['vis_level'] = 0
-            
             else:    
                 wsi = WSI_object.getOpenSlide()
                 best_level = wsi.get_best_level_for_downsample(64)
                 current_vis_params['vis_level'] = best_level
+                del wsi
 
         if current_seg_params['seg_level'] < 0:
             if len(WSI_object.level_dim) == 1:
                 current_seg_params['seg_level'] = 0
-            
             else:
                 wsi = WSI_object.getOpenSlide()
                 best_level = wsi.get_best_level_for_downsample(64)
                 current_seg_params['seg_level'] = best_level
+                del wsi
 
         keep_ids = str(current_seg_params['keep_ids'])
         if keep_ids != 'none' and len(keep_ids) > 0:
@@ -162,6 +169,7 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
             mask = WSI_object.visWSI(**current_vis_params)
             mask_path = os.path.join(mask_save_dir, slide_id+'.jpg')
             cv2.imwrite(mask_path, mask)
+            del mask
 
         # save patch coordinates of each contour as .h5 file
         patch_time_elapsed = -1 # Default time
@@ -184,7 +192,6 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
             file_path = os.path.join(patch_save_dir, slide_id+'.h5') # add new attr to patched .h5 file.
             if os.path.isfile(file_path):
                 start = time.time()
-                from forward.forward import forward_detection, detect_tc_positive_nuclei
 
                 # detect nuclei
                 file_path = forward_detection(file_path, WSI_object, patch_size, model_path=model_path_detection) # forward using trained model and save info to .h5 file.
@@ -202,7 +209,6 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
             file_path = os.path.join(patch_save_dir, slide_id+'.h5') # add new attr to patched .h5 file.
             if os.path.isfile(file_path):
                 start = time.time()
-                from forward.forward import forward_segmentation
 
                 # segmentation
                 file_path = forward_segmentation(file_path, WSI_object, patch_size, model_path=model_path_segmentation) # forward using trained model and save info to .h5 file.
@@ -227,7 +233,11 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
         stitch_time_elapsed = -1
         if stitch:
             # 視覚化用にヒートマップをリサイズする
-            downscale=16
+            downscale = 16
+            if obj_pow == 20:
+                downscale = 8
+            elif obj_pow == 10:
+                downscale = 4
             wsi = WSI_object.getOpenSlide()
             vis_level = wsi.get_best_level_for_downsample(downscale)
 
@@ -236,6 +246,7 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
                 w, h = wsi.level_dimensions[level_to]
                 return cv2.resize(np.array(img), (w, h))
             heatmap_vis_level = resize_to_vis_level(heatmap, level_from=heatmap_level, level_to=vis_level)
+            del wsi, heatmap
 
             def rescale_to_vis_level(locs, level_from, level_to):
                 assert level_from <= level_to
@@ -266,6 +277,8 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
         seg_times += seg_time_elapsed
         patch_times += patch_time_elapsed
         stitch_times += stitch_time_elapsed
+        del WSI_object, heatmap_vis_level, all_locs, tc_positive_locs
+        gc.collect()
 
     seg_times /= total
     patch_times /= total
@@ -282,8 +295,10 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
 
 
 parser = argparse.ArgumentParser(description='seg and patch')
-parser.add_argument('--source', type = str,
+parser.add_argument('--source_slides', type = str,
                     help='path to folder containing raw wsi image files')
+parser.add_argument('--source_annotations', type = str,
+                    help='path to folder containing annotation files')
 parser.add_argument('--step_size', type = int, default=256,
                     help='step_size')
 parser.add_argument('--patch_size', type = int, default=256,
@@ -322,12 +337,14 @@ if __name__ == '__main__':
     else:
         process_list = None
 
-    print('source: ', args.source)
+    print('source_slides: ', args.source_slides)
+    print('source_annotations: ', args.source_annotations)
     print('patch_save_dir: ', patch_save_dir)
     print('mask_save_dir: ', mask_save_dir)
     print('stitch_save_dir: ', stitch_save_dir)
     
-    directories = {'source': args.source, 
+    directories = {'source_slides': args.source_slides, 
+                   'source_annotations': args.source_annotations,
                    'save_dir': args.save_dir,
                    'patch_save_dir': patch_save_dir, 
                    'mask_save_dir' : mask_save_dir, 
@@ -335,7 +352,7 @@ if __name__ == '__main__':
 
     for key, val in directories.items():
         print("{} : {}".format(key, val))
-        if key not in ['source']:
+        if key not in ['source_slides', 'source_annotations']:
             os.makedirs(val, exist_ok=True)
 
     seg_params = {'seg_level': -1, 'sthresh': 8, 'mthresh': 7, 'close': 4, 'use_otsu': False,

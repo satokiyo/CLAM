@@ -8,7 +8,24 @@ import math
 import cv2
 from utils.file_utils import open_hdf5_file
 import utils.utils as utils
+import gc
 
+#PALETTE = [0,0,0,
+#           0,128,0,
+#           128,0,0,
+#           0,0,128]
+#BACKGOUND_CLASS_IDX = 0
+
+PALETTE = [
+    255,0,0, #ff0000 0 cancer
+    0,255,0, #00ff00 1 not_cancer
+    0,0,255, #0000ff 2 bronchial_epitherial
+    0,255,255, #00ffff 3 macrophage
+    255,0,255, #ff00ff 4 lymphocyte
+    255,255,0, #ffff00 5 stroma
+    0,0,0,   #000000 6 background
+]
+BACKGOUND_CLASS_IDX = 6
 
 class HDFVisitor():
     '''
@@ -117,6 +134,7 @@ def savePatchIter_bag_hdf5(patch):
         coord_dset[-img_shape[0]:] = (x,y)
 
     file.close()
+    gc.collect()
 
 def save_hdf5(output_path, asset_dict, attr_dict= None, mode='a'):
     file = h5py.File(output_path, mode)
@@ -137,6 +155,7 @@ def save_hdf5(output_path, asset_dict, attr_dict= None, mode='a'):
             dset.resize(len(dset) + data_shape[0], axis=0)
             dset[-data_shape[0]:] = val
     file.close()
+    gc.collect()
     return output_path
 
 def initialize_hdf5_bag(first_patch, save_coord=False):
@@ -164,6 +183,7 @@ def initialize_hdf5_bag(first_patch, save_coord=False):
         coord_dset[:] = (x,y)
 
     file.close()
+    gc.collect()
     return file_path
 
 def sample_indices(scores, k, start=0.48, end=0.52, convert_to_percentile=False, seed=1):
@@ -272,11 +292,17 @@ def DrawMapGray(canvas, patch_dset, coords, patch_size, step_size, indices=None,
         patch = patch_dset[patch_id]
         #patch = file[patch_ref]
         coord = coords[patch_id]
-        canvas_crop_shape = canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0]].shape[:2]
+        #canvas_crop_shape = canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0]].shape[:2]
+        canvas_crop_shape = patch_size
         if patch_size > step_size: # overlap tile
             offset = (int((patch_size[0] - step_size[0]) // 2), int((patch_size[0] - step_size[0]) // 2))
-            canvas_crop_shape = canvas[coord[1]:coord[1]+step_size[1], coord[0]:coord[0]+step_size[0]].shape[:2]
-            canvas[coord[1]+offset[1]:coord[1]+offset[1]+step_size[1], coord[0]+offset[0]:coord[0]+offset[0]+step_size[0]] = patch[offset[1]:offset[1]+canvas_crop_shape[0], offset[0]:offset[0]+canvas_crop_shape[1]]
+            #canvas_crop_shape = canvas[coord[1]:coord[1]+step_size[1], coord[0]:coord[0]+step_size[0]].shape[:2]
+            try:
+                canvas_crop_shape = step_size
+                canvas[coord[1]+offset[1]:coord[1]+offset[1]+step_size[1], coord[0]+offset[0]:coord[0]+offset[0]+step_size[0]] = patch[offset[1]:offset[1]+canvas_crop_shape[0], offset[0]:offset[0]+canvas_crop_shape[1]]
+            except Exception:
+                shape = canvas[coord[1]+offset[1]:coord[1]+offset[1]+step_size[1], coord[0]+offset[0]:coord[0]+offset[0]+step_size[0]].shape
+                canvas[coord[1]+offset[1]:coord[1]+offset[1]+step_size[1], coord[0]+offset[0]:coord[0]+offset[0]+step_size[0]] = patch[offset[1]:offset[1]+canvas_crop_shape[0], offset[0]:offset[0]+canvas_crop_shape[1]][:shape[0], :shape[1]]
         else:
             canvas[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0]] = patch[:canvas_crop_shape[0], :canvas_crop_shape[1]]
 
@@ -348,6 +374,7 @@ def StitchPatches(hdf5_file_path, downscale=16, draw_grid=False, bg_color=(0,0,0
     heatmap = DrawMap(heatmap, dset, coords, downscaled_shape, indices=None, draw_grid=draw_grid)
     
     file.close()
+    gc.collect()
     return heatmap
 
 def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=False, draw_contour=False, bg_color=(0,0,0), alpha=-1,
@@ -371,7 +398,8 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
     w, h = wsi.level_dimensions[vis_level] # image size at 'heatmap level' for stitching. (Not level0 nor patch level)
     print('downscaled size for stiching: {} x {}'.format(w, h))
 
-    targets = ['detection', 'segmentation']
+    #targets = ['detection', 'segmentation']
+    targets = ['segmentation']
     for target in targets:
         grp_target = file[target]
         patch_size = grp_target.attrs['patch_size']
@@ -385,20 +413,11 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
 
         # contour毎に処理する
         for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
-#            grp_cont = file[f'{target}/{cont}']
-
-            # dataset読み込み。以下の階層にdatasetがある。
-            # /segmentation/contourxx/coords_patches
-#            queries = ['coords_patches']
-#            v = HDFVisitor(*queries)
-#            grp_cont.visititems(v)
-#            coords_all_patch.extend(v.container['coords_patches'])
             coords_contour = file[f'{target}/{cont}/coords_contour']
             coords_all_contour.setdefault(i, coords_contour)
 
         queries = ['coords_patches']
         v = HDFVisitor(*queries)
-    #        grp_cont.visititems(v)
         grp_target.visititems(v)
         if not v.container['coords_patches']:
             print(f'There is no patch generated for {target}.')
@@ -468,10 +487,6 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
                 if not isinstance(overlaymap, Image.Image):
                     overlay = Image.fromarray(overlaymap)
                 print('start overlay segmap')
-                PALETTE = [0,0,0,
-                           0,128,0,
-                           128,0,0,
-                           0,0,128]
                 overlaymap_p = overlay.convert("P")
                 overlaymap_p.putpalette(PALETTE)
                 overlaymap_rgb = np.array(overlaymap_p.convert('RGB')).astype(np.uint8)
@@ -481,25 +496,28 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
                 heatmap = heatmap.astype(np.uint8)
                 heatmap_inner = np.bitwise_and(heatmap, mask)
                 heatmap_outer = np.bitwise_and(heatmap, (255 - mask))
-                heatmap = heatmap_outer + (heatmap_inner / 2) + (overlaymap_bgr / 2)
+                heatmap_seg = heatmap_outer + (heatmap_inner / 2) + (overlaymap_bgr / 2)
                 print('end')
             if all_locs:
                 print('start overlay loc')
                 #heatmap = utils.paint_circles(img=np.array(heatmap), points=np.vstack(all_locs), color='cyan', crosshair=True, markerSize=0) # slow
                 ctr = np.array(all_locs).reshape((-1,1,2)).astype(np.int32)[:,:,[1,0]] # reverse xy
-                heatmap = cv2.drawContours(np.array(heatmap), ctr, -1, (255,255,0), -10, 8) # index=-1:all contours
+                heatmap_tc_locs = cv2.drawContours(np.array(heatmap), ctr, -1, (255,255,0), 0, 8) # index=-1:all contours
                 print('end')
             if tc_positive_locs:
                 print('start overlay loc tc(+)')
-                #heatmap = utils.paint_circles(img=np.array(heatmap), points=np.vstack(tc_positive_locs), color='pink', crosshair=True, markerSize=0) # slow
                 ctr = np.array(tc_positive_locs).reshape((-1,1,2)).astype(np.int32)[:,:,[1,0]] # reverse xy
-                heatmap = cv2.drawContours(np.array(heatmap), ctr, -1, (0,255,255), -10, 8) # index=-1:all contours
+                #heatmap_tc_locs = cv2.drawContours(np.array(heatmap_tc_locs), ctr, -1, (0,255,255), 0, 8) # index=-1:all contours # yellow
+                heatmap_tc_locs = cv2.drawContours(np.array(heatmap_tc_locs), ctr, -1, (0,0,255), 0, 8) # index=-1:all contours # red
                 print('end')
+                save_path = os.path.join(save_dir, f'{wsi_object.name}_{target}_overlay_tc_locs.jpg')
+                cv2.imwrite(save_path, heatmap_tc_locs)
  
             # save
-            save_path = os.path.join(save_dir, f'{wsi_object.name}_{target}_overlay.jpg')
-            cv2.imwrite(save_path, heatmap)
+            save_path = os.path.join(save_dir, f'{wsi_object.name}_{target}_overlay_segmap.jpg')
+            cv2.imwrite(save_path, heatmap_seg)
 
+    file.flush()
     file.close()
 
 
@@ -575,21 +593,8 @@ def calculate_TPS(file_path, wsi_object):
     # 全contourの情報を取得
     coords_all_patch = [] # 全てのcontourのパッチ座標保存用
     segmap_all_patch = [] # 全てのcontourのsegmap保存用
-
-    #TODO
-    #datasetとしてcontour毎に計算済みTPSを記憶しておく。もし全てのcontourが計算済みのdatasetを持っていたら、summaryも含めて前回の値を返すだけ。
-    #もし計算済みのdatasetを持っていないcontourがあったら、そのcontourだけTPSを計算し、後のcontourは値を使いまわす。ただしsummaryは再計算して更新する必要がある。
-    # -> もし一つでも変わっていたらsummary再計算のためにマップを準備しないといけない。なので時間短縮効果は、一つも変化ない場合のみ。なのであまり意味がない可能性が高い
-
-#    for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
-#        grp_cont = file[f'segmentation/{cont}']
-
-        # dataset読み込み。以下の階層にdatasetがある。
-        # /segmentation/contourxx/coords_patches
-        # /segmentation/contourxx/segmap
     queries = ['coords_patches', 'segmap']
     v = HDFVisitor(*queries)
-#        grp_cont.visititems(v)
     grp_target.visititems(v)
     if not v.container['coords_patches']:
         print('There is no patch generated for segmentation.')
@@ -610,31 +615,23 @@ def calculate_TPS(file_path, wsi_object):
     dset = segmap_all_patch
 
     w, h = wsi.level_dimensions[target_level_seg] # image size at 'heatmap level' for calculating TPS. (Not level0 nor patch level)
-    canvas = np.zeros((h,w))
+    #canvas = np.zeros((h,w))
+    canvas = np.full((h, w), BACKGOUND_CLASS_IDX, dtype=int)
     print('downscaled size for calculating TPS: {} x {}'.format(w, h))
 
     # 全パッチ分のsegmentationの結果を一枚にまとめる
     segmap = DrawMapGray(canvas, dset, coords_seg_level, patch_size_seg, step_size=step_size_seg, indices=None)
-#    segmap = np.array(segmap)
 
     #------------------------------------------------------------------------#
     # detectionの結果の座標を読み込んでsegmentationのlevelでの座標に変換する #
     #------------------------------------------------------------------------#
     grp_target = file['detection']
 
-    # 全contourの情報を取得
-#    coords_all_patch = [] # 全てのcontourのパッチ座標保存用
-#    detection_loc_all_patch = [] # 全てのcontourのdetection_loc保存用
-#    detection_indices_all_patch = [] # 全てのcontourのdetection_indices保存用
-
-#    for i, cont in enumerate(sorted(grp_target)): # sortedしないと順番がおかしくなる
-#        grp_cont = file[f'detection/{cont}']
-
-        # dataset読み込み。以下の階層にdatasetがある。
-        # /detection/contourxx/coords_patches
-        # /detection/contourxx/detection_loc_x
-        # /detection/contourxx/detection_loc_y
-        # /detection/contourxx/detection_tc_positive_indices
+    # dataset読み込み。以下の階層にdatasetがある。
+    # /detection/contourxx/coords_patches
+    # /detection/contourxx/detection_loc_x
+    # /detection/contourxx/detection_loc_y
+    # /detection/contourxx/detection_tc_positive_indices
     queries = ['coords_patches', 'detection_loc_x', 'detection_loc_y', 'detection_tc_positive_indices']
     v = HDFVisitor(*queries)
     grp_target.visititems(v)
@@ -643,10 +640,7 @@ def calculate_TPS(file_path, wsi_object):
         print('exit.')
         import sys
         sys.exit()
-        #grp_cont.visititems(v)
     coords_all_patch = np.vstack(v.container['coords_patches'])
-#    detection_loc = np.array([np.array(patch_x, patch_y).T for cont_x, cont_y in zip(v.container['detection_loc_x'], v.container['detection_loc_y']) for patch_x, patch_y in zip(cont_x, cont_y) ])
-    #tmp = np.array([(patch_x, patch_y) for cont_x, cont_y in zip(v.container['detection_loc_x'], v.container['detection_loc_y']) for patch_x, patch_y in zip(cont_x, cont_y)]) # tuple of xy, by contour to by patch 
     buf = []
     for cont_id, (cont_x, cont_y) in enumerate(zip(v.container['detection_loc_x'], v.container['detection_loc_y'])):
         buf.append([])
@@ -654,7 +648,6 @@ def calculate_TPS(file_path, wsi_object):
             buf[cont_id].append((patch_x, patch_y))
     tmp1 = np.vstack(buf)
     buf = []
-#    tmp2 = np.array([(x,y) for i, (patch_x, patch_y) in enumerate(tmp) for x, y in zip(patch_x, patch_y)])
     for patch_id, (patch_tuple) in enumerate(tmp1):
         patch_x, patch_y = patch_tuple
         buf.append([])
@@ -663,27 +656,15 @@ def calculate_TPS(file_path, wsi_object):
         buf[patch_id] = np.array(buf[patch_id])
     tmp2 = np.array(buf)
 
-    #detection_loc_all_patch.extend(detection_loc)
     detection_loc_all_patch = tmp2
-#    detection_indices_all_patch.extend(v.container['detection_tc_positive_indices'])
+
     buf = []
     for cont_id, (tc_ind) in enumerate(v.container['detection_tc_positive_indices']):
-#        buf.append(tc_ind)
         for patch_ind in tc_ind: # by contour to by patch 
-            #buf[cont_id].append(patch_ind)
             buf.append(patch_ind)
-    tmp1 = np.array(buf)
-#    for patch_id, (patch_tuple) in enumerate(tmp1):
-#        patch_x, patch_y = patch_tuple
-#        buf.append([])
-#        for x, y in zip(patch_x, patch_y):
-#            buf[patch_id].append((x,y))
-#        buf[patch_id] = np.array(buf[patch_id])
-#    tmp2 = np.array(buf)
-    detection_indices_all_patch = tmp1
+    tmp3 = np.array(buf)
 
-
- 
+    detection_indices_all_patch = tmp3
 
     target_level_detection = file['detection'].attrs.get('patch_level')
     patch_downsample = int(wsi.level_downsamples[target_level_detection])
@@ -709,10 +690,6 @@ def calculate_TPS(file_path, wsi_object):
     tc_positive_locs = [all_locs[i_patch][detection_indices_all_patch_notempty[i_patch][:].tolist()] for i_patch in range(len(all_locs))]
     all_locs = np.vstack(all_locs).astype(np.int32)[:,[1,0]] # reverse y,x
     tc_positive_locs = np.vstack(tc_positive_locs).astype(np.int32)[:,[1,0]] # reverse y,x
-#    all_locs = np.unique(np.vstack(all_locs), axis=0).astype(np.int32)[:,[1,0]] # reverse y,x
-#    tc_positive_locs = np.unique(np.vstack(tc_positive_locs), axis=0).astype(np.int32)[:,[1,0]] # reverse y,x
-    #print(f"all_locs {len(all_locs)}")
-    #print(f"tc_positive_locs {len(tc_positive_locs)}")
 
     grp_target = file['segmentation']
 
@@ -762,13 +739,12 @@ def calculate_TPS(file_path, wsi_object):
 
     # segmapを囲み領域に限定する
     mask_all[mask_all>0] = 1 #TODO slow
-#    mask_all = (mask_all*255).astype(np.uint8) # binary mask 0 or 255
-#    mask_all = (mask_all/255).astype(np.uint8) # binary mask 0 or 1
-    #mask_all = np.where((mask_all != 0), 1, 0).astype(np.uint8) # binary mask 0 or 1
     segmap = mask_all * segmap
 
     del mask_all
 
+    file.flush()
     file.close()
+    gc.collect()
 
-    return segmap, target_level_seg, locs_inside_contour_segmap, locs_pos_inside_contour_segmap
+    return segmap, target_level_seg, locs_inside_contour_segmap, locs_pos_inside_contour_segmar
