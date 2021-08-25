@@ -30,6 +30,8 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
                   patch = False, auto_skip=True, process_list = None,
                   model_path_detection='', model_path_segmentation='',
                   intensity_thres=175, area_thres=0.1, radius=25):
+    
+
 
     slides = sorted(os.listdir(source_slides))
     slides = [slide for slide in slides if os.path.isfile(os.path.join(source_slides, slide)) and slide.split('.')[-1] in ['ndpi', 'svs']]
@@ -44,6 +46,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
 
     if process_list is None:
         df = initialize_df(slides, seg_params, filter_params, vis_params, patch_params)
+    
     else:
         df = pd.read_csv(process_list)
         df = initialize_df(df, seg_params, filter_params, vis_params, patch_params)
@@ -94,11 +97,13 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
             current_filter_params = filter_params.copy()
             current_seg_params = seg_params.copy()
             current_patch_params = patch_params.copy()
+            
         else:
             current_vis_params = {}
             current_filter_params = {}
             current_seg_params = {}
             current_patch_params = {}
+
 
             for key in vis_params.keys():
                 current_vis_params.update({key: df.loc[idx, key]})
@@ -115,6 +120,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
         if current_vis_params['vis_level'] < 0:
             if len(WSI_object.level_dim) == 1:
                 current_vis_params['vis_level'] = 0
+            
             else:    
                 wsi = WSI_object.getOpenSlide()
                 best_level = wsi.get_best_level_for_downsample(64)
@@ -124,6 +130,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
         if current_seg_params['seg_level'] < 0:
             if len(WSI_object.level_dim) == 1:
                 current_seg_params['seg_level'] = 0
+            
             else:
                 wsi = WSI_object.getOpenSlide()
                 best_level = wsi.get_best_level_for_downsample(64)
@@ -185,23 +192,23 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
             patch_time_elapsed = time.time() - start_time
 
 
-        # forward detection model.
-        detection_time_elapsed = -1
-        detection=True
-        if detection:
-            file_path = os.path.join(patch_save_dir, slide_id+'.h5') # add new attr to patched .h5 file.
-            if os.path.isfile(file_path):
-                start = time.time()
-
-                # detect nuclei
-                file_path = forward_detection(file_path, WSI_object, patch_size, model_path=model_path_detection) # forward using trained model and save info to .h5 file.
-
-                # detect TC(+)
-                file_path = detect_tc_positive_nuclei(file_path, WSI_object, intensity_thres=intensity_thres, area_thres=area_thres, radius=radius) 
-
-                detection_time_elapsed = time.time() - start
-
-
+#        # forward detection model.
+#        detection_time_elapsed = -1
+#        detection=True
+#        if detection:
+#            file_path = os.path.join(patch_save_dir, slide_id+'.h5') # add new attr to patched .h5 file.
+#            if os.path.isfile(file_path):
+#                start = time.time()
+#
+#                # detect nuclei
+#                file_path = forward_detection(file_path, WSI_object, patch_size, model_path=model_path_detection) # forward using trained model and save info to .h5 file.
+#
+#                # detect TC(+)
+#                file_path = detect_tc_positive_nuclei(file_path, WSI_object, intensity_thres=intensity_thres, area_thres=area_thres, radius=radius) 
+#
+#                detection_time_elapsed = time.time() - start
+#
+#
         # forward segmentation model.
         segmentation_time_elapsed = -1
         segmentation=True
@@ -224,7 +231,8 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
                 start = time.time()
  
                 # calculate TPS
-                heatmap, heatmap_level, all_locs, tc_positive_locs = calculate_TPS(file_path, WSI_object)
+#                heatmap, heatmap_level, all_locs, tc_positive_locs = calculate_TPS(file_path, WSI_object)
+                heatmap, heatmap_level = calculate_TPS(file_path, WSI_object)
 
                 calc_tps_time_elapsed = time.time() - start
 
@@ -248,12 +256,12 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
             heatmap_vis_level = resize_to_vis_level(heatmap, level_from=heatmap_level, level_to=vis_level)
             del wsi, heatmap
 
-            def rescale_to_vis_level(locs, level_from, level_to):
-                assert level_from <= level_to
-                locs = [loc / 2**(level_to-level_from) for loc in locs]
-                return locs
-            all_locs = rescale_to_vis_level(all_locs, level_from=heatmap_level, level_to=vis_level)
-            tc_positive_locs = rescale_to_vis_level(tc_positive_locs, level_from=heatmap_level, level_to=vis_level)
+#            def rescale_to_vis_level(locs, level_from, level_to):
+#                assert level_from <= level_to
+#                locs = [loc / 2**(level_to-level_from) for loc in locs]
+#                return locs
+#            all_locs = rescale_to_vis_level(all_locs, level_from=heatmap_level, level_to=vis_level)
+#            tc_positive_locs = rescale_to_vis_level(tc_positive_locs, level_from=heatmap_level, level_to=vis_level)
 
             file_path = WSI_object.hdf5_file
             if os.path.isfile(file_path):
@@ -262,13 +270,14 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
  
                 # Stitch
                 StitchCoords(file_path, WSI_object, stitch_save_dir, downscale=downscale, bg_color=(0,0,0), alpha=-1,
-                             draw_grid=True, draw_contour=True, overlaymap=heatmap_vis_level, all_locs=all_locs, tc_positive_locs=tc_positive_locs) 
+                             draw_grid=True, draw_contour=True, overlaymap=heatmap_vis_level)#, all_locs=all_locs, tc_positive_locs=tc_positive_locs) 
+#                             draw_grid=True, draw_contour=True, overlaymap=heatmap_vis_level, all_locs=all_locs, tc_positive_locs=tc_positive_locs) 
 
                 stitch_time_elapsed = time.time() - start
 
         print("segmentation took  {:>10.5f} seconds".format(seg_time_elapsed))
         print("patching took      {:>10.5f} seconds".format(patch_time_elapsed))
-        print("detection took     {:>10.5f} seconds".format(detection_time_elapsed))
+#        print("detection took     {:>10.5f} seconds".format(detection_time_elapsed))
         print("segmentation took  {:>10.5f} seconds".format(segmentation_time_elapsed))
         print("calculate TPS took {:>10.5f} seconds".format(calc_tps_time_elapsed))
         print("stitching took     {:>10.5f} seconds".format(stitch_time_elapsed))
@@ -277,7 +286,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
         seg_times += seg_time_elapsed
         patch_times += patch_time_elapsed
         stitch_times += stitch_time_elapsed
-        del WSI_object, heatmap_vis_level, all_locs, tc_positive_locs
+#        del WSI_object, heatmap_vis_level, all_locs, tc_positive_locs
         gc.collect()
 
     seg_times /= total

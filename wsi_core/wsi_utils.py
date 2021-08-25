@@ -625,71 +625,71 @@ def calculate_TPS(file_path, wsi_object):
     #------------------------------------------------------------------------#
     # detectionの結果の座標を読み込んでsegmentationのlevelでの座標に変換する #
     #------------------------------------------------------------------------#
-    grp_target = file['detection']
-
-    # dataset読み込み。以下の階層にdatasetがある。
-    # /detection/contourxx/coords_patches
-    # /detection/contourxx/detection_loc_x
-    # /detection/contourxx/detection_loc_y
-    # /detection/contourxx/detection_tc_positive_indices
-    queries = ['coords_patches', 'detection_loc_x', 'detection_loc_y', 'detection_tc_positive_indices']
-    v = HDFVisitor(*queries)
-    grp_target.visititems(v)
-    if not v.container['coords_patches']:
-        print('There is no patch generated for detection.')
-        print('exit.')
-        import sys
-        sys.exit()
-    coords_all_patch = np.vstack(v.container['coords_patches'])
-    buf = []
-    for cont_id, (cont_x, cont_y) in enumerate(zip(v.container['detection_loc_x'], v.container['detection_loc_y'])):
-        buf.append([])
-        for patch_x, patch_y in zip(cont_x, cont_y): # tuple of xy, by contour to by patch 
-            buf[cont_id].append((patch_x, patch_y))
-    tmp1 = np.vstack(buf)
-    buf = []
-    for patch_id, (patch_tuple) in enumerate(tmp1):
-        patch_x, patch_y = patch_tuple
-        buf.append([])
-        for x, y in zip(patch_x, patch_y):
-            buf[patch_id].append((x,y))
-        buf[patch_id] = np.array(buf[patch_id])
-    tmp2 = np.array(buf)
-
-    detection_loc_all_patch = tmp2
-
-    buf = []
-    for cont_id, (tc_ind) in enumerate(v.container['detection_tc_positive_indices']):
-        for patch_ind in tc_ind: # by contour to by patch 
-            buf.append(patch_ind)
-    tmp3 = np.array(buf)
-
-    detection_indices_all_patch = tmp3
-
-    target_level_detection = file['detection'].attrs.get('patch_level')
-    patch_downsample = int(wsi.level_downsamples[target_level_detection])
+#    grp_target = file['detection']
+#
+#    # dataset読み込み。以下の階層にdatasetがある。
+#    # /detection/contourxx/coords_patches
+#    # /detection/contourxx/detection_loc_x
+#    # /detection/contourxx/detection_loc_y
+#    # /detection/contourxx/detection_tc_positive_indices
+#    queries = ['coords_patches', 'detection_loc_x', 'detection_loc_y', 'detection_tc_positive_indices']
+#    v = HDFVisitor(*queries)
+#    grp_target.visititems(v)
+#    if not v.container['coords_patches']:
+#        print('There is no patch generated for detection.')
+#        print('exit.')
+#        import sys
+#        sys.exit()
+#    coords_all_patch = np.vstack(v.container['coords_patches'])
+#    buf = []
+#    for cont_id, (cont_x, cont_y) in enumerate(zip(v.container['detection_loc_x'], v.container['detection_loc_y'])):
+#        buf.append([])
+#        for patch_x, patch_y in zip(cont_x, cont_y): # tuple of xy, by contour to by patch 
+#            buf[cont_id].append((patch_x, patch_y))
+#    tmp1 = np.vstack(buf)
+#    buf = []
+#    for patch_id, (patch_tuple) in enumerate(tmp1):
+#        patch_x, patch_y = patch_tuple
+#        buf.append([])
+#        for x, y in zip(patch_x, patch_y):
+#            buf[patch_id].append((x,y))
+#        buf[patch_id] = np.array(buf[patch_id])
+#    tmp2 = np.array(buf)
+#
+#    detection_loc_all_patch = tmp2
+#
+#    buf = []
+#    for cont_id, (tc_ind) in enumerate(v.container['detection_tc_positive_indices']):
+#        for patch_ind in tc_ind: # by contour to by patch 
+#            buf.append(patch_ind)
+#    tmp3 = np.array(buf)
+#
+#    detection_indices_all_patch = tmp3
+#
+#    target_level_detection = file['detection'].attrs.get('patch_level')
+#    patch_downsample = int(wsi.level_downsamples[target_level_detection])
     patch_downsample_seg = int(wsi.level_downsamples[target_level_seg])
-
-    detection_loc_all_patch_ref_level = []
-    detection_indices_all_patch_notempty = []
-    for coord, detection_loc, detection_ind in zip(coords_all_patch, detection_loc_all_patch, detection_indices_all_patch):
-        if np.all(detection_loc == np.int32(-1)): # 核の数が0だった場合、np.array([-1, -1], dtype=np.int32)が入っている
-            continue
-        detection_loc = coord + detection_loc * patch_downsample  # level0での絶対座標に変換. coordはlevel0でのtopleft
-        detection_loc_all_patch_ref_level.append(detection_loc)
-        detection_indices_all_patch_notempty.append(detection_ind)
-
-    # seg levelでの座標に変換
-    detection_loc_all_patch_seg_level = [(loc/patch_downsample_seg).astype(np.int32) for loc in detection_loc_all_patch_ref_level]
-
-
-    #------------------------------------------#
-    # contour毎にループしてTPSを算出 @seglevel #
-    #------------------------------------------#
-    all_locs = detection_loc_all_patch_seg_level
-    tc_positive_locs = [all_locs[i_patch][detection_indices_all_patch_notempty[i_patch][:].tolist()] for i_patch in range(len(all_locs))]
-    all_locs = np.vstack(all_locs).astype(np.int32)[:,[1,0]] # reverse y,x
-    tc_positive_locs = np.vstack(tc_positive_locs).astype(np.int32)[:,[1,0]] # reverse y,x
+#
+#    detection_loc_all_patch_ref_level = []
+#    detection_indices_all_patch_notempty = []
+#    for coord, detection_loc, detection_ind in zip(coords_all_patch, detection_loc_all_patch, detection_indices_all_patch):
+#        if np.all(detection_loc == np.int32(-1)): # 核の数が0だった場合、np.array([-1, -1], dtype=np.int32)が入っている
+#            continue
+#        detection_loc = coord + detection_loc * patch_downsample  # level0での絶対座標に変換. coordはlevel0でのtopleft
+#        detection_loc_all_patch_ref_level.append(detection_loc)
+#        detection_indices_all_patch_notempty.append(detection_ind)
+#
+#    # seg levelでの座標に変換
+##    detection_loc_all_patch_seg_level = [(loc/patch_downsample_seg).astype(np.int32) for loc in detection_loc_all_patch_ref_level]
+#
+#
+#    #------------------------------------------#
+#    # contour毎にループしてTPSを算出 @seglevel #
+#    #------------------------------------------#
+#    all_locs = detection_loc_all_patch_seg_level
+#    tc_positive_locs = [all_locs[i_patch][detection_indices_all_patch_notempty[i_patch][:].tolist()] for i_patch in range(len(all_locs))]
+#    all_locs = np.vstack(all_locs).astype(np.int32)[:,[1,0]] # reverse y,x
+#    tc_positive_locs = np.vstack(tc_positive_locs).astype(np.int32)[:,[1,0]] # reverse y,x
 
     grp_target = file['segmentation']
 
@@ -707,35 +707,35 @@ def calculate_TPS(file_path, wsi_object):
         cont_mask = cv2.fillPoly(cont_mask, wsi_object.scaleContourDim([coords_contour[:]], scale), (1)).astype(np.uint8) # binary mask of a contour
         mask_all += cont_mask
 
-        # count tc
-        tc_count, tc_count_on_segmap, _ = count_TC(cont_mask, segmap, all_locs)
-        print(f'TC count contour{i}              : {tc_count}')
-        print(f'TC count contour{i} with segmap  : {tc_count_on_segmap}')
-
-        # count tc(+)
-        tc_pos_count, tc_pos_count_on_segmap, _ = count_TC(cont_mask, segmap, tc_positive_locs)
-        print(f'TC(+) count contour{i}             : {tc_pos_count}')
-        print(f'TC(+) count contour{i}with segmap  : {tc_pos_count_on_segmap}')
-
-        # TPS
-        print(f'TPS contour{i}           : {tc_pos_count/(tc_count+1e-6)}')
-        print(f'TPS cont{i} with segmap  : {tc_pos_count_on_segmap/(tc_count_on_segmap+1e-6)}')
-
-    # 全てのcontoursに対して処理する
-    # count summary tc
-    tc_count, tc_count_on_segmap, locs_inside_contour_segmap = count_TC(mask_all, segmap, all_locs)
-    print(f'TC count summary               : {tc_count}')
-    print(f'TC count summary with segmap   : {tc_count_on_segmap}')
-
-    # count summary tc(+)
-    tc_pos_count, tc_pos_count_on_segmap, locs_pos_inside_contour_segmap = count_TC(mask_all, segmap, tc_positive_locs)
-    print(f'TC(+) count summary              : {tc_pos_count}')
-    print(f'TC(+) count summary with segmap  : {tc_pos_count_on_segmap}')
-
-    # TPS summary
-    print(f'TPS summary              : {tc_pos_count/(tc_count+1e-6)}')
-    print(f'TPS summary with segmap  : {tc_pos_count_on_segmap/(tc_count_on_segmap+1e-6)}')
-
+#        # count tc
+#        tc_count, tc_count_on_segmap, _ = count_TC(cont_mask, segmap, all_locs)
+#        print(f'TC count contour{i}              : {tc_count}')
+#        print(f'TC count contour{i} with segmap  : {tc_count_on_segmap}')
+#
+#        # count tc(+)
+#        tc_pos_count, tc_pos_count_on_segmap, _ = count_TC(cont_mask, segmap, tc_positive_locs)
+#        print(f'TC(+) count contour{i}             : {tc_pos_count}')
+#        print(f'TC(+) count contour{i}with segmap  : {tc_pos_count_on_segmap}')
+#
+#        # TPS
+#        print(f'TPS contour{i}           : {tc_pos_count/(tc_count+1e-6)}')
+#        print(f'TPS cont{i} with segmap  : {tc_pos_count_on_segmap/(tc_count_on_segmap+1e-6)}')
+#
+#    # 全てのcontoursに対して処理する
+#    # count summary tc
+#    tc_count, tc_count_on_segmap, locs_inside_contour_segmap = count_TC(mask_all, segmap, all_locs)
+#    print(f'TC count summary               : {tc_count}')
+#    print(f'TC count summary with segmap   : {tc_count_on_segmap}')
+#
+#    # count summary tc(+)
+#    tc_pos_count, tc_pos_count_on_segmap, locs_pos_inside_contour_segmap = count_TC(mask_all, segmap, tc_positive_locs)
+#    print(f'TC(+) count summary              : {tc_pos_count}')
+#    print(f'TC(+) count summary with segmap  : {tc_pos_count_on_segmap}')
+#
+#    # TPS summary
+#    print(f'TPS summary              : {tc_pos_count/(tc_count+1e-6)}')
+#    print(f'TPS summary with segmap  : {tc_pos_count_on_segmap/(tc_count_on_segmap+1e-6)}')
+#
 
     # segmapを囲み領域に限定する
     mask_all[mask_all>0] = 1 #TODO slow
@@ -747,4 +747,5 @@ def calculate_TPS(file_path, wsi_object):
     file.close()
     gc.collect()
 
-    return segmap, target_level_seg, locs_inside_contour_segmap, locs_pos_inside_contour_segmar
+#    return segmap, target_level_seg, locs_inside_contour_segmap, locs_pos_inside_contour_segmap
+    return segmap, target_level_seg
