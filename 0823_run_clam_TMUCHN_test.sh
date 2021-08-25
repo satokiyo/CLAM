@@ -54,8 +54,9 @@ python3 create_patches_fp.py \
 --area_thres 0.05 \
 --radius 16 \
 --ckpts_detection /media/prostate/20210331_PDL1/CLAM/models/nuclei_detection/ckpts/20x/0716-233238/best_model_1.pth \
---ckpts_segmentation /media/prostate/20210331_PDL1/segmentation/DM-Count/ckpts/encoder-se_resnext50_32x4d_input-768_downrate-1_scale_pyramid_module-1_attention_branch-0_albumentation-1_copy_paste-0_deep_supervision-1_ocr-0/0824-191135/best_model_5.pth
+--ckpts_segmentation /media/prostate/20210331_PDL1/segmentation/DM-Count/ckpts/encoder-se_resnext50_32x4d_input-768_downrate-1_scale_pyramid_module-1_attention_branch-0_albumentation-1_copy_paste-0_deep_supervision-1_ocr-0/0825-124534/best_model_3.pth
 
+#--ckpts_segmentation /media/prostate/20210331_PDL1/segmentation/DM-Count/ckpts/encoder-se_resnext50_32x4d_input-768_downrate-1_scale_pyramid_module-1_attention_branch-0_albumentation-1_copy_paste-0_deep_supervision-1_ocr-0/0824-191135/best_model_5.pth
 
 
 
@@ -113,7 +114,9 @@ python3 create_patches_fp.py \
 --area_thres 0.05 \
 --radius 16 \
 --ckpts_detection /media/prostate/20210331_PDL1/CLAM/models/nuclei_detection/ckpts/20x/0716-233238/best_model_1.pth \
---ckpts_segmentation /media/prostate/20210331_PDL1/segmentation/DM-Count/ckpts/encoder-se_resnext50_32x4d_input-768_downrate-1_scale_pyramid_module-1_attention_branch-0_albumentation-1_copy_paste-0_deep_supervision-1_ocr-0/0824-191135/best_model_5.pth
+--ckpts_segmentation /media/prostate/20210331_PDL1/segmentation/DM-Count/ckpts/encoder-se_resnext50_32x4d_input-768_downrate-1_scale_pyramid_module-1_attention_branch-0_albumentation-1_copy_paste-0_deep_supervision-1_ocr-0/0825-124534/best_model_3.pth
+
+#--ckpts_segmentation /media/prostate/20210331_PDL1/segmentation/DM-Count/ckpts/encoder-se_resnext50_32x4d_input-768_downrate-1_scale_pyramid_module-1_attention_branch-0_albumentation-1_copy_paste-0_deep_supervision-1_ocr-0/0824-191135/best_model_5.pth
 
 
 
