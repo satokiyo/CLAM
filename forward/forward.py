@@ -48,8 +48,8 @@ class SegConfig():
     downsample_ratio: int = 1
     deep_supervision: int = 1
     use_ocr: int = 0
-    #use_ssl: int = 1
-    use_ssl: int = 0
+    use_ssl: int = 1
+    #use_ssl: int = 0
     activation: str = 'identity'
     save: bool = True
     #palette: list = [0,0,0,
