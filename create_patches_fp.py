@@ -244,7 +244,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
             def resize_to_vis_level(img, level_from, level_to):
                 assert level_from <= level_to
                 w, h = wsi.level_dimensions[level_to]
-                return cv2.resize(np.array(img), (w, h))
+                return cv2.resize(np.array(img).astype(np.float32), (w, h))
             heatmap_vis_level = resize_to_vis_level(heatmap, level_from=heatmap_level, level_to=vis_level)
             del wsi, heatmap
 
