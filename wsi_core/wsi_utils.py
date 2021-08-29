@@ -60,7 +60,7 @@ def count_TC(mask, segmap, locs):
     for loc in locs: # loop over all tc cells
         if mask[loc[0], loc[1]] > 0: # 囲みの中に含まれる点か?
             tc_count+=1
-            if segmap[loc[0], loc[1]] == 2: # segmentation結果でcancer = class2の点か?
+            if segmap[loc[0], loc[1]] == 0: # segmentation結果でcancer = class0の点か?
                 tc_count_on_segmap+=1
                 locs_inside_contour_segmap.append(loc)
 
@@ -747,4 +747,4 @@ def calculate_TPS(file_path, wsi_object):
     file.close()
     gc.collect()
 
-    return segmap, target_level_seg, locs_inside_contour_segmap, locs_pos_inside_contour_segmar
+    return segmap, target_level_seg, locs_inside_contour_segmap, locs_pos_inside_contour_segmap
