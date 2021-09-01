@@ -48,7 +48,7 @@ class SegConfig():
     downsample_ratio: int = 1
     deep_supervision: int = 1
     use_ocr: int = 0
-    #use_ssl: int = 1
+#    use_ssl: int = 1
     use_ssl: int = 0
     activation: str = 'identity'
     save: bool = True
@@ -521,7 +521,7 @@ def get_centroids(img, liklihoodmap, tau=-1, org_img=None, name=None, save_dir=N
 
 
 
-def detect_tc_positive_nuclei(file_path, wsi_object, intensity_thres=175, area_thres=0.05, radius=16, num_worker=15, verbose=True):
+def detect_tc_positive_nuclei(file_path, wsi_object, intensity_thres=175, area_thres=0.05, radius=16, num_worker=8, verbose=True):
     '''
     file_pathのHDF5ファイルの各パッチをイテレートし、TC(+)の結果が無かった場合だけ処理を実行し、該当のpatchのhdf5 groupに新たなdatasetを追加する
     もしくは結果はあるが、閾値が変更された場合に、既にある結果計算時の閾値が違うpatchに対してのみ処理を実行し、datasetの値を更新する
@@ -597,7 +597,7 @@ def detect_tc_positive_nuclei(file_path, wsi_object, intensity_thres=175, area_t
         if data:
             patch, coord, grp_name_parent, detection_loc = data
             buf.append([patch, coord, grp_name_parent, detection_loc])
-            if len(buf) == 300: # 300 patch毎に処理
+            if len(buf) == 200: # 200 patch毎に処理
                 flush_buffer(buf, save_dir, slide_id, radius, area_thres, intensity_thres, file_path, num_worker=num_worker)
                 #del buf[:]
                 buf.clear()
@@ -611,7 +611,7 @@ def detect_tc_positive_nuclei(file_path, wsi_object, intensity_thres=175, area_t
     return file_path
 
 
-def flush_buffer(buf, save_dir, slide_id, radius, area_thres, intensity_thres, file_path, num_worker=15, verbose=True):
+def flush_buffer(buf, save_dir, slide_id, radius, area_thres, intensity_thres, file_path, num_worker=8, verbose=True):
     args = [(patch, coord, grp_name_parent, detection_loc, save_dir, slide_id, radius, area_thres, intensity_thres) for patch, coord, grp_name_parent, detection_loc in buf]
     total = len(args)
     print(f'start TC(+)count workers...num patch {total}')
