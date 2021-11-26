@@ -41,7 +41,7 @@
 python3 create_patches_fp.py \
 --source_slides /media/HDD2/20210331_PDL1/data/ndpi/2021pdl1/20210719pdl1TMU/40xRename/PDL1 \
 --source_annotations /media/HDD2/20210331_PDL1/data/ndpi/2021pdl1/20210719pdl1TMU/40xRename/PDL1 \
---save_dir /media/HDD2/20210331_PDL1/CLAM/20210823_0719pdl1TMU_40xRename_7class_annotation/se_resnext_no_copy_paste_768 \
+--save_dir /media/HDD2/20210331_PDL1/CLAM/20210823_0719pdl1TMU_40xRename_7class_annotation/se_resnext_no_copy_paste_768_tmp \
 --patch_size 1536  \
 --step_size 1024   \
 --patch_resolution_detection 20  \
