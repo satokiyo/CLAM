@@ -24,7 +24,7 @@ class Mosaic_Canvas(object):
 		self.coord = np.array([0, 0])
 
 	def increment_coord(self):
-		#print('current coord: {} x {} / {} x {}'.format(self.coord[0], self.coord[1], self.dimensions[0], self.dimensions[1]))
+		#logger.debug('current coord: {} x {} / {} x {}'.format(self.coord[0], self.coord[1], self.dimensions[0], self.dimensions[1]))
 		assert np.all(self.coord<=self.dimensions)
 		if self.coord[0] + self.downscaled_patch_size <=self.dimensions[0] - self.downscaled_patch_size:
 			self.coord[0]+=self.downscaled_patch_size

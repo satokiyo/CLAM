@@ -9,6 +9,9 @@ import cv2
 from utils.file_utils import open_hdf5_file
 import utils.utils as utils
 import gc
+from logging import getLogger
+
+logger = getLogger(f'pdl1_module.{__name__}')
 
 #PALETTE = [0,0,0,
 #           0,128,0,
@@ -254,12 +257,12 @@ def DrawMap(canvas, patch_dset, coords, patch_size, indices=None, verbose=1, dra
     total = len(indices)
     if verbose > 0:
         ten_percent_chunk = math.ceil(total * 0.1)
-        #print('start stitching {}'.format(patch_dset.attrs['wsi_name']))
+        #logger.debug('start stitching {}'.format(patch_dset.attrs['wsi_name']))
     
     for idx in range(total):
         if verbose > 0:
             if idx % ten_percent_chunk == 0:
-                print('progress: {}/{} stitched'.format(idx, total))
+                logger.debug('progress: {}/{} stitched'.format(idx, total))
         
         patch_id = indices[idx]
         patch_ref = patch_dset[patch_id]
@@ -281,12 +284,12 @@ def DrawMapGray(canvas, patch_dset, coords, patch_size, step_size, indices=None,
     total = len(indices)
     if verbose > 0:
         ten_percent_chunk = math.ceil(total * 0.1)
-        #print('start stitching {}'.format(patch_dset.attrs['wsi_name']))
+        #logger.debug('start stitching {}'.format(patch_dset.attrs['wsi_name']))
     
     for idx in range(total):
         if verbose > 0:
             if idx % ten_percent_chunk == 0:
-                print('progress: {}/{} stitched segmap'.format(idx, total))
+                logger.debug('progress: {}/{} stitched segmap'.format(idx, total))
         
         patch_id = indices[idx]
         patch = patch_dset[patch_id]
@@ -324,14 +327,14 @@ def DrawMapFromCoords(canvas, wsi_object, coords, patch_size, vis_level, indices
         ten_percent_chunk = math.ceil(total * 0.1)
         
     patch_size = tuple(np.ceil((np.array(patch_size)/np.array(downsamples))).astype(np.int32)) # convert patch_size from level 0 to vis_level.
-    print('downscaled patch size: {}x{}'.format(patch_size[0], patch_size[1]))
+    logger.debug('downscaled patch size: {}x{}'.format(patch_size[0], patch_size[1]))
     
     canvas_size = canvas.shape[:2]
     canvas[:,:,:] = np.array(wsi_object.wsi.read_region((0,0), vis_level, (canvas_size[1], canvas_size[0])).convert("RGB")) # coord is the location (x, y) tuple giving the top left pixel in the level 0 reference frame
     for patch_id in range(total):
         if verbose > 0:
             if patch_id % ten_percent_chunk == 0:
-                print('progress: {}/{} stitched'.format(patch_id, total))
+                logger.debug('progress: {}/{} stitched'.format(patch_id, total))
         
         coord = coords[patch_id] # coord at level0
         #patch = np.array(wsi_object.wsi.read_region(tuple(coord), vis_level, patch_size).convert("RGB")) # coord is the location (x, y) tuple giving the top left pixel in the level 0 reference frame
@@ -352,18 +355,18 @@ def StitchPatches(hdf5_file_path, downscale=16, draw_grid=False, bg_color=(0,0,0
         w, h = dset.attrs['downsampled_level_dim'] # patch size at patch level. Not at level 0
     else:
         w, h = dset.attrs['level_dim']
-    print('original size: {} x {}'.format(w, h))
+    logger.debug('original size: {} x {}'.format(w, h))
     w = w // downscale
     h = h //downscale
     coords = (coords / downscale).astype(np.int32)
-    print('downscaled size for stiching: {} x {}'.format(w, h))
-    print('number of patches: {}'.format(len(dset)))
+    logger.debug('downscaled size for stiching: {} x {}'.format(w, h))
+    logger.debug('number of patches: {}'.format(len(dset)))
     img_shape = dset[0].shape
-    print('patch shape: {}'.format(img_shape))
+    logger.debug('patch shape: {}'.format(img_shape))
     downscaled_shape = (img_shape[1] // downscale, img_shape[0] // downscale)
 
     if w*h > Image.MAX_IMAGE_PIXELS: 
-        raise Image.DecompressionBombError("Visualization Downscale %d is too large" % downscale)
+        raise Image.DecompressionBombError("Visualization Downscale {d} is too large".format(downscale))
     
     if alpha < 0 or alpha == -1:
         heatmap = Image.new(size=(w,h), mode="RGB", color=bg_color)
@@ -393,10 +396,10 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
     vis_level = wsi.get_best_level_for_downsample(downscale)
     w, h = wsi.level_dimensions[0] # image size at level0
 
-    print('start stitching {}'.format(file.attrs['name']))
-    print('original size: {} x {}'.format(w, h))
+    logger.debug('start stitching {}'.format(file.attrs['name']))
+    logger.debug('original size: {} x {}'.format(w, h))
     w, h = wsi.level_dimensions[vis_level] # image size at 'heatmap level' for stitching. (Not level0 nor patch level)
-    print('downscaled size for stiching: {} x {}'.format(w, h))
+    logger.debug('downscaled size for stiching: {} x {}'.format(w, h))
 
     #targets = ['detection', 'segmentation']
     targets = ['segmentation']
@@ -404,9 +407,9 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
         grp_target = file[target]
         patch_size = grp_target.attrs['patch_size']
         patch_level = grp_target.attrs['patch_level']
-        print('patch size: {}x{} patch level: {}'.format(patch_size, patch_size, patch_level)) # patch levelでのpatch size
+        logger.debug('patch size: {}x{} patch level: {}'.format(patch_size, patch_size, patch_level)) # patch levelでのpatch size
         patch_size = tuple((np.array((patch_size, patch_size)) * wsi.level_downsamples[patch_level]).astype(np.int32)) # level0でのpatch size
-        print('ref patch size: {}x{}'.format(patch_size, patch_size))
+        logger.debug('ref patch size: {}x{}'.format(patch_size, patch_size))
 
         coords_all_patch = [] # 全てのcontourのパッチ座標保存用
         coords_all_contour = {} # 全てのcontourの輪郭座標保存用
@@ -420,8 +423,8 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
         v = HDFVisitor(*queries)
         grp_target.visititems(v)
         if not v.container['coords_patches']:
-            print(f'There is no patch generated for {target}.')
-            print('exit.')
+            logger.debug(f'There is no patch generated for {target}.')
+            logger.debug('exit.')
             import sys
             sys.exit()
 
@@ -430,13 +433,13 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
 
         # 全てのcontoursに対して処理する
         all_coords_patch = np.unique(coords_all_patch, axis=0) # 重複するpatchは除く
-        print(f'start stitching all contours of {target}')
-        print('number of patches: {}'.format(len(all_coords_patch)))
+        logger.debug(f'start stitching all contours of {target}')
+        logger.debug('number of patches: {}'.format(len(all_coords_patch)))
 
 
 
         if w*h > Image.MAX_IMAGE_PIXELS: 
-            raise Image.DecompressionBombError("Visualization Downscale %d is too large" % downscale)
+            raise Image.DecompressionBombError("Visualization Downscale {d} is too large".format(downscale))
         
         if alpha < 0 or alpha == -1:
             heatmap = Image.new(size=(w,h), mode="RGB", color=bg_color)
@@ -486,7 +489,7 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
             if overlaymap is not None:
                 if not isinstance(overlaymap, Image.Image):
                     overlay = Image.fromarray(overlaymap)
-                print('start overlay segmap')
+                logger.debug('start overlay segmap')
                 overlaymap_p = overlay.convert("P")
                 overlaymap_p.putpalette(PALETTE)
                 overlaymap_rgb = np.array(overlaymap_p.convert('RGB')).astype(np.uint8)
@@ -497,19 +500,19 @@ def StitchCoords(hdf5_file_path, wsi_object, save_dir, downscale=16, draw_grid=F
                 heatmap_inner = np.bitwise_and(heatmap, mask)
                 heatmap_outer = np.bitwise_and(heatmap, (255 - mask))
                 heatmap_seg = heatmap_outer + (heatmap_inner / 2) + (overlaymap_bgr / 2)
-                print('end')
+                logger.debug('end')
             if all_locs:
-                print('start overlay loc')
+                logger.debug('start overlay loc')
                 #heatmap = utils.paint_circles(img=np.array(heatmap), points=np.vstack(all_locs), color='cyan', crosshair=True, markerSize=0) # slow
                 ctr = np.array(all_locs).reshape((-1,1,2)).astype(np.int32)[:,:,[1,0]] # reverse xy
                 heatmap_tc_locs = cv2.drawContours(np.array(heatmap), ctr, -1, (255,255,0), 0, 8) # index=-1:all contours
-                print('end')
+                logger.debug('end')
             if tc_positive_locs:
-                print('start overlay loc tc(+)')
+                logger.debug('start overlay loc tc(+)')
                 ctr = np.array(tc_positive_locs).reshape((-1,1,2)).astype(np.int32)[:,:,[1,0]] # reverse xy
                 #heatmap_tc_locs = cv2.drawContours(np.array(heatmap_tc_locs), ctr, -1, (0,255,255), 0, 8) # index=-1:all contours # yellow
                 heatmap_tc_locs = cv2.drawContours(np.array(heatmap_tc_locs), ctr, -1, (0,0,255), 0, 8) # index=-1:all contours # red
-                print('end')
+                logger.debug('end')
                 save_path = os.path.join(save_dir, f'{wsi_object.name}_{target}_overlay_tc_locs.jpg')
                 cv2.imwrite(save_path, heatmap_tc_locs)
  
@@ -532,8 +535,8 @@ def SamplePatches(coords_file_path, save_file_path, wsi_object,
     h5_patch_level = dset.attrs['patch_level']
     
     if verbose>0:
-        print('in .h5 file: total number of patches: {}'.format(len(coords)))
-        print('in .h5 file: patch size: {}x{} patch level: {}'.format(h5_patch_size, h5_patch_size, h5_patch_level))
+        logger.debug('in .h5 file: total number of patches: {}'.format(len(coords)))
+        logger.debug('in .h5 file: patch size: {}x{} patch level: {}'.format(h5_patch_size, h5_patch_size, h5_patch_level))
 
     if patch_level < 0:
         patch_level = h5_patch_level
@@ -583,7 +586,7 @@ def calculate_TPS(file_path, wsi_object):
     # hdf5の読み込み
     file = open_hdf5_file(file_path, mode='r')
 
-    print('start calculating TPS {}'.format(file.attrs['name']))
+    logger.debug('start calculating TPS {}'.format(file.attrs['name']))
 
     #-----------------------------------------------------------#
     # segmentationの結果をindex color画像として取得する #
@@ -597,8 +600,8 @@ def calculate_TPS(file_path, wsi_object):
     v = HDFVisitor(*queries)
     grp_target.visititems(v)
     if not v.container['coords_patches']:
-        print('There is no patch generated for segmentation.')
-        print('exit.')
+        logger.debug('There is no patch generated for segmentation.')
+        logger.debug('exit.')
         import sys
         sys.exit()
 
@@ -617,7 +620,7 @@ def calculate_TPS(file_path, wsi_object):
     w, h = wsi.level_dimensions[target_level_seg] # image size at 'heatmap level' for calculating TPS. (Not level0 nor patch level)
     #canvas = np.zeros((h,w))
     canvas = np.full((h, w), BACKGOUND_CLASS_IDX, dtype=int)
-    print('downscaled size for calculating TPS: {} x {}'.format(w, h))
+    logger.debug('downscaled size for calculating TPS: {} x {}'.format(w, h))
 
     # 全パッチ分のsegmentationの結果を一枚にまとめる
     segmap = DrawMapGray(canvas, dset, coords_seg_level, patch_size_seg, step_size=step_size_seg, indices=None)
@@ -636,8 +639,8 @@ def calculate_TPS(file_path, wsi_object):
     v = HDFVisitor(*queries)
     grp_target.visititems(v)
     if not v.container['coords_patches']:
-        print('There is no patch generated for detection.')
-        print('exit.')
+        logger.debug('There is no patch generated for detection.')
+        logger.debug('exit.')
         import sys
         sys.exit()
     coords_all_patch = np.vstack(v.container['coords_patches'])
@@ -709,32 +712,32 @@ def calculate_TPS(file_path, wsi_object):
 
         # count tc
         tc_count, tc_count_on_segmap, _ = count_TC(cont_mask, segmap, all_locs)
-        print(f'TC count contour{i}              : {tc_count}')
-        print(f'TC count contour{i} with segmap  : {tc_count_on_segmap}')
+        logger.debug(f'TC count contour{i}              : {tc_count}')
+        logger.debug(f'TC count contour{i} with segmap  : {tc_count_on_segmap}')
 
         # count tc(+)
         tc_pos_count, tc_pos_count_on_segmap, _ = count_TC(cont_mask, segmap, tc_positive_locs)
-        print(f'TC(+) count contour{i}             : {tc_pos_count}')
-        print(f'TC(+) count contour{i}with segmap  : {tc_pos_count_on_segmap}')
+        logger.debug(f'TC(+) count contour{i}             : {tc_pos_count}')
+        logger.debug(f'TC(+) count contour{i}with segmap  : {tc_pos_count_on_segmap}')
 
         # TPS
-        print(f'TPS contour{i}           : {tc_pos_count/(tc_count+1e-6)}')
-        print(f'TPS cont{i} with segmap  : {tc_pos_count_on_segmap/(tc_count_on_segmap+1e-6)}')
+        logger.debug(f'TPS contour{i}           : {tc_pos_count/(tc_count+1e-6)}')
+        logger.debug(f'TPS cont{i} with segmap  : {tc_pos_count_on_segmap/(tc_count_on_segmap+1e-6)}')
 
     # 全てのcontoursに対して処理する
     # count summary tc
     tc_count, tc_count_on_segmap, locs_inside_contour_segmap = count_TC(mask_all, segmap, all_locs)
-    print(f'TC count summary               : {tc_count}')
-    print(f'TC count summary with segmap   : {tc_count_on_segmap}')
+    logger.debug(f'TC count summary               : {tc_count}')
+    logger.debug(f'TC count summary with segmap   : {tc_count_on_segmap}')
 
     # count summary tc(+)
     tc_pos_count, tc_pos_count_on_segmap, locs_pos_inside_contour_segmap = count_TC(mask_all, segmap, tc_positive_locs)
-    print(f'TC(+) count summary              : {tc_pos_count}')
-    print(f'TC(+) count summary with segmap  : {tc_pos_count_on_segmap}')
+    logger.debug(f'TC(+) count summary              : {tc_pos_count}')
+    logger.debug(f'TC(+) count summary with segmap  : {tc_pos_count_on_segmap}')
 
     # TPS summary
-    print(f'TPS summary              : {tc_pos_count/(tc_count+1e-6)}')
-    print(f'TPS summary with segmap  : {tc_pos_count_on_segmap/(tc_count_on_segmap+1e-6)}')
+    logger.debug(f'TPS summary              : {tc_pos_count/(tc_count+1e-6)}')
+    logger.debug(f'TPS summary with segmap  : {tc_pos_count_on_segmap/(tc_count_on_segmap+1e-6)}')
 
 
     # segmapを囲み領域に限定する
