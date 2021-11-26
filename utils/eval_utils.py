@@ -13,9 +13,12 @@ from utils.core_utils import Accuracy_Logger
 from sklearn.metrics import roc_auc_score, roc_curve, auc
 from sklearn.preprocessing import label_binarize
 import matplotlib.pyplot as plt
+from logging import getLogger
+
+logger = getLogger(f'pdl1_module.{__name__}')
 
 def initiate_model(args, ckpt_path):
-    print('Init Model')    
+    logger.debug('Init Model')    
     model_dict = {"dropout": args.drop_out, 'n_classes': args.n_classes}
     
     if args.model_size is not None and args.model_type in ['clam_sb', 'clam_mb']:
@@ -48,11 +51,11 @@ def initiate_model(args, ckpt_path):
 def eval(dataset, args, ckpt_path):
     model = initiate_model(args, ckpt_path)
     
-    print('Init Loaders')
+    logger.debug('Init Loaders')
     loader = get_simple_loader(dataset)
     patient_results, test_error, auc, df, _ = summary(model, loader, args)
-    print('test_error: ', test_error)
-    print('auc: ', auc)
+    logger.debug('test_error: ', test_error)
+    logger.debug('auc: ', auc)
     return model, patient_results, test_error, auc, df
 
 def summary(model, loader, args):

@@ -14,6 +14,11 @@ from PIL import Image
 import cv2
 import gc
 from pathlib import Path
+#from datetime import datetime
+from logging import getLogger, DEBUG, INFO
+from utils.logger_setting import set_logger
+
+logger = getLogger('pdl1_module')
 
 def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, mask_save_dir, stitch_save_dir, 
                   patch_size = 256, step_size = 256, 
@@ -27,7 +32,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
                   use_default_params = False, 
                   seg = False, save_mask = True, 
                   stitch= False, 
-                  patch = False, auto_skip=True, process_list = None,
+                  patch = False, auto_skip=True, segmentation=False, detection=False, process_list = None,
                   model_path_detection='', model_path_segmentation='',
                   intensity_thres=175, area_thres=0.1, radius=25):
 
@@ -40,7 +45,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
         if slide.split('.')[0] in target_names:
             tmp.append(slide)
     slides = tmp
-    print(slides)
+    logger.debug(slides)
 
     if process_list is None:
         df = initialize_df(slides, seg_params, filter_params, vis_params, patch_params)
@@ -61,14 +66,14 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
         df.to_csv(os.path.join(save_dir, 'process_list_autogen.csv'), index=False)
         idx = process_stack.index[i]
         slide = process_stack.loc[idx, 'slide_id']
-        print("\n\nprogress: {:.2f}, {}/{}".format(i/total, i, total))
-        print('processing {}'.format(slide))
+        logger.debug("\n\nprogress: {:.2f}, {}/{}".format(i/total, i, total))
+        logger.debug('processing {}'.format(slide))
         
         df.loc[idx, 'process'] = 0
         slide_id, _ = os.path.splitext(slide)
 
         if auto_skip and os.path.isfile(os.path.join(patch_save_dir, slide_id + '.h5')):
-            print('{} already exist in destination location, skipped'.format(slide_id))
+            logger.debug('{} already exist in destination location, skipped'.format(slide_id))
             df.loc[idx, 'status'] = 'already_exist'
             continue
 
@@ -79,8 +84,8 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
         # patch level(openslide mag_idx)の決定
         obj_pow = int(WSI_object.objective_power)
         if (obj_pow < patch_resolution_detection) or (obj_pow < patch_resolution_segmentation):
-            print("Desired patch resolution is higher than wsi's highest available resolution i.e. objective power")
-            print("skip slide ...")
+            logger.debug("Desired patch resolution is higher than wsi's highest available resolution i.e. objective power")
+            logger.debug("skip slide ...")
             continue
         downscale_detection = int(obj_pow / patch_resolution_detection)
         downscale_segmentation = int(obj_pow / patch_resolution_segmentation)
@@ -146,7 +151,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
 
         w, h = WSI_object.level_dim[current_seg_params['seg_level']] 
         if w * h > 1e8:
-            print('level_dim {} x {} is likely too large for successful segmentation, aborting'.format(w, h))
+            logger.debug('level_dim {} x {} is likely too large for successful segmentation, aborting'.format(w, h))
             df.loc[idx, 'status'] = 'failed_seg'
             continue
 
@@ -163,6 +168,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
             WSI_object.segmentTissue(**current_seg_params, filter_params=current_filter_params)
 
             seg_time_elapsed = time.time() - start_time   
+            logger.debug("segmenttissue took  {:>10.5f} seconds".format(seg_time_elapsed))
 
         # save segmented tissue mask(contour line)
         if save_mask:
@@ -183,24 +189,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
             WSI_object.process_contours(**current_patch_params)
             
             patch_time_elapsed = time.time() - start_time
-
-
-        # forward detection model.
-        detection_time_elapsed = -1
-        detection=True
-        if detection:
-            file_path = os.path.join(patch_save_dir, slide_id+'.h5') # add new attr to patched .h5 file.
-            if os.path.isfile(file_path):
-                start = time.time()
-
-                # detect nuclei
-                file_path = forward_detection(file_path, WSI_object, patch_size, model_path=model_path_detection) # forward using trained model and save info to .h5 file.
-
-                # detect TC(+)
-                file_path = detect_tc_positive_nuclei(file_path, WSI_object, intensity_thres=intensity_thres, area_thres=area_thres, radius=radius) 
-
-                detection_time_elapsed = time.time() - start
-
+            logger.debug("patching took      {:>10.5f} seconds".format(patch_time_elapsed))
 
         # forward segmentation model.
         segmentation_time_elapsed = -1
@@ -214,6 +203,27 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
                 file_path = forward_segmentation(file_path, WSI_object, patch_size, model_path=model_path_segmentation) # forward using trained model and save info to .h5 file.
 
                 segmentation_time_elapsed = time.time() - start
+                logger.debug("segmentation took  {:>10.5f} seconds".format(segmentation_time_elapsed))
+
+
+        # forward detection model.
+        detection_time_elapsed = -1
+        detection=True
+        if detection:
+            file_path = os.path.join(patch_save_dir, slide_id+'.h5') # add new attr to patched .h5 file.
+            if os.path.isfile(file_path):
+                start = time.time()
+
+                # detect nuclei
+#                file_path = forward_detection(file_path, WSI_object, patch_size, model_path=model_path_detection) # forward using trained model and save info to .h5 file.
+
+                # detect TC(+)
+                file_path = detect_tc_positive_nuclei(file_path, WSI_object, intensity_thres=intensity_thres, area_thres=area_thres, radius=radius, num_worker=12) 
+
+                detection_time_elapsed = time.time() - start
+                logger.debug("detection took     {:>10.5f} seconds".format(detection_time_elapsed))
+
+
 
 
         # TPS算出
@@ -227,6 +237,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
                 heatmap, heatmap_level, all_locs, tc_positive_locs = calculate_TPS(file_path, WSI_object)
 
                 calc_tps_time_elapsed = time.time() - start
+                logger.debug("calculate TPS took {:>10.5f} seconds".format(calc_tps_time_elapsed))
 
 
         # save stitching heatmap of patches
@@ -244,7 +255,7 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
             def resize_to_vis_level(img, level_from, level_to):
                 assert level_from <= level_to
                 w, h = wsi.level_dimensions[level_to]
-                return cv2.resize(np.array(img), (w, h))
+                return cv2.resize(np.array(img).astype(np.float32), (w, h))
             heatmap_vis_level = resize_to_vis_level(heatmap, level_from=heatmap_level, level_to=vis_level)
             del wsi, heatmap
 
@@ -265,13 +276,14 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
                              draw_grid=True, draw_contour=True, overlaymap=heatmap_vis_level, all_locs=all_locs, tc_positive_locs=tc_positive_locs) 
 
                 stitch_time_elapsed = time.time() - start
+                logger.debug("stitching took     {:>10.5f} seconds".format(stitch_time_elapsed))
 
-        print("segmentation took  {:>10.5f} seconds".format(seg_time_elapsed))
-        print("patching took      {:>10.5f} seconds".format(patch_time_elapsed))
-        print("detection took     {:>10.5f} seconds".format(detection_time_elapsed))
-        print("segmentation took  {:>10.5f} seconds".format(segmentation_time_elapsed))
-        print("calculate TPS took {:>10.5f} seconds".format(calc_tps_time_elapsed))
-        print("stitching took     {:>10.5f} seconds".format(stitch_time_elapsed))
+        logger.debug("segmentation took  {:>10.5f} seconds".format(seg_time_elapsed))
+        logger.debug("patching took      {:>10.5f} seconds".format(patch_time_elapsed))
+        logger.debug("detection took     {:>10.5f} seconds".format(detection_time_elapsed))
+        logger.debug("segmentation took  {:>10.5f} seconds".format(segmentation_time_elapsed))
+        logger.debug("calculate TPS took {:>10.5f} seconds".format(calc_tps_time_elapsed))
+        logger.debug("stitching took     {:>10.5f} seconds".format(stitch_time_elapsed))
         df.loc[idx, 'status'] = 'processed'
 
         seg_times += seg_time_elapsed
@@ -285,9 +297,9 @@ def seg_and_patch(source_slides, source_annotations, save_dir, patch_save_dir, m
     stitch_times /= total
 
     df.to_csv(os.path.join(save_dir, 'process_list_autogen.csv'), index=False)
-    print("average segmentation time in s per slide: {:>10.5f}".format(seg_times))
-    print("average patching time in s per slide:     {:>10.5f}".format(patch_times))
-    print("average stiching time in s per slide:     {:>10.5f}".format(stitch_times))
+    logger.debug("average segmentation time in s per slide: {:>10.5f}".format(seg_times))
+    logger.debug("average patching time in s per slide:     {:>10.5f}".format(patch_times))
+    logger.debug("average stiching time in s per slide:     {:>10.5f}".format(stitch_times))
         
     return seg_times, patch_times
 
@@ -307,6 +319,8 @@ parser.add_argument('--patch', default=False, action='store_true')
 parser.add_argument('--seg', default=False, action='store_true')
 parser.add_argument('--stitch', default=False, action='store_true')
 parser.add_argument('--no_auto_skip', default=True, action='store_false')
+parser.add_argument('--segmentation', default=False, action='store_true')
+parser.add_argument('--detection', default=False, action='store_true')
 parser.add_argument('--save_dir', type = str,
                     help='directory to save processed data')
 parser.add_argument('--preset', default=None, type=str,
@@ -337,11 +351,18 @@ if __name__ == '__main__':
     else:
         process_list = None
 
-    print('source_slides: ', args.source_slides)
-    print('source_annotations: ', args.source_annotations)
-    print('patch_save_dir: ', patch_save_dir)
-    print('mask_save_dir: ', mask_save_dir)
-    print('stitch_save_dir: ', stitch_save_dir)
+    # prepare logger
+    #curr_date    = datetime.now().strftime('%Y%m%d_%H%M')
+    log_file     = os.path.join(args.save_dir, "processing.log")
+    if not Path(log_file).exists():
+        Path(log_file).parent.mkdir(parents=True)
+    set_logger(logger, log_file, level=DEBUG, level_fh=DEBUG, level_ch=DEBUG) 
+
+    logger.debug(f'source_slides: {args.source_slides}')
+    logger.debug(f'source_annotations: {args.source_annotations}')
+    logger.debug(f'patch_save_dir: {patch_save_dir}')
+    logger.debug(f'mask_save_dir: {mask_save_dir}')
+    logger.debug(f'stitch_save_dir: {stitch_save_dir}')
     
     directories = {'source_slides': args.source_slides, 
                    'source_annotations': args.source_annotations,
@@ -351,7 +372,7 @@ if __name__ == '__main__':
                    'stitch_save_dir': stitch_save_dir} 
 
     for key, val in directories.items():
-        print("{} : {}".format(key, val))
+        logger.debug("{} : {}".format(key, val))
         if key not in ['source_slides', 'source_annotations']:
             os.makedirs(val, exist_ok=True)
 
@@ -386,7 +407,7 @@ if __name__ == '__main__':
                    'patch_params': patch_params,
                   'vis_params': vis_params}
 
-    print(parameters)
+    logger.debug(parameters)
 
     seg_times, patch_times = seg_and_patch(**directories, **parameters,
                                             patch_size = args.patch_size, step_size=args.step_size, 
@@ -396,6 +417,7 @@ if __name__ == '__main__':
                                             patch_resolution_segmentation=args.patch_resolution_segmentation,
                                             patch = args.patch,
                                             process_list = process_list, auto_skip=args.no_auto_skip,
+                                            segmentation = args.segmentation, detection=args.detection,
                                             model_path_detection=args.ckpts_detection,
                                             model_path_segmentation=args.ckpts_segmentation,
                                             intensity_thres=args.intensity_thres,

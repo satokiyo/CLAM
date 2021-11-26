@@ -90,7 +90,7 @@ class Wsi_Region(Dataset):
         filtered_coords = []
         #iterate through tissue contours for valid patch coordinates
         for cont_idx, contour in enumerate(wsi_object.contours_tissue): 
-            print('processing {}/{} contours'.format(cont_idx, len(wsi_object.contours_tissue)))
+            logger.debug('processing {}/{} contours'.format(cont_idx, len(wsi_object.contours_tissue)))
             cont_check_fn = get_contour_check_fn(contour_fn, contour, self.ref_size[0], center_shift)
             coord_results, _ = wsi_object.process_contour(contour, wsi_object.holes_tissue[cont_idx], level, '', 
                             patch_size = patch_size[0], step_size = step_size[0], contour_fn=cont_check_fn,
@@ -101,7 +101,7 @@ class Wsi_Region(Dataset):
         coords=np.vstack(filtered_coords)
 
         self.coords = coords
-        print('filtered a total of {} coordinates'.format(len(self.coords)))
+        logger.debug('filtered a total of {} coordinates'.format(len(self.coords)))
         
         # apply transformation
         if t is None:

@@ -19,6 +19,12 @@ import onnxruntime as ort
 from multiprocessing import Pool
 import pandas as pd
 import gc
+from logging import getLogger
+#from my_cython import my_func
+
+logger = getLogger(f'pdl1_module.{__name__}')
+
+CANCER_CLASS_IDX = 0
 
 class Config():
     device: int = 0
@@ -30,8 +36,10 @@ class Config():
     scale_pyramid_module: int = 1
     use_attention_branch: int = 0
     downsample_ratio: int = 1
-    deep_supervision: int = 1
-    use_ssl: int = 1
+#    deep_supervision: int = 1
+    deep_supervision: int = 0
+#    use_ssl: int = 1
+    use_ssl: int = 0
     save: bool = True
     resume: bool = True
 
@@ -94,7 +102,7 @@ def forward_detection(file_path, wsi_object, patch_size, model_path, output_yolo
     # onnx
     #ort_session = ort.InferenceSession(model_path)
 
-    dataset = Whole_Slide_Bag_FP(file_path, wsi_object.getOpenSlide(), pretrained=False, custom_transforms=False, custom_downsample=1, target_patch_size=-1, target='detection')
+    dataset = Whole_Slide_Bag_FP(file_path, wsi_object.getOpenSlide(), pretrained=False, custom_transforms=False, custom_downsample=1, target_patch_size=-1, target='detection', contains_cancer_flag=True)
     total = len(dataset)
     slide_id = dataset.slide_id
     dataloader = torch.utils.data.DataLoader(dataset,
@@ -122,10 +130,10 @@ def forward_detection(file_path, wsi_object, patch_size, model_path, output_yolo
         f.close()
  
     buf = {}
-    for patch_id, (patch, coord, grp_name_parent) in enumerate(dataloader):
+    for patch_id, (patch, coord, grp_name_parent, contains_cancer_flag) in enumerate(dataloader):
         if verbose > 0:
             if patch_id % ten_percent_chunk == 0:
-                print('progress: {}/{} forward finished'.format(patch_id, total))
+                logger.debug('progress: {}/{} forward finished'.format(patch_id, total))
 
         with open_hdf5_file(file_path, mode='r') as f:
             # 既に結果があるcontourのパッチは飛ばす(->途中でforwardを止めた場合でもcontourに対して一つでも結果があるとスキップしてしまう。その場合、.h5を削除してから再実行する必要がある)
@@ -133,7 +141,15 @@ def forward_detection(file_path, wsi_object, patch_size, model_path, output_yolo
                 f.close()
                 continue
             f.close()
-        
+
+        if not contains_cancer_flag: # skip forward detection if cancer region less than 0.5%.
+            # save nuclei locations as dataset
+            logger.debug("not contains cancer region 0.5%>!!")
+            if grp_name_parent[0] not in buf.keys():
+                buf.setdefault(grp_name_parent[0], [])
+            buf[grp_name_parent[0]].append(np.array([[-1, -1]]).astype(np.int32))
+            continue
+
         inputs = patch.to(device)
         with torch.set_grad_enabled(False):
             '''
@@ -177,7 +193,7 @@ def forward_detection(file_path, wsi_object, patch_size, model_path, output_yolo
                 #outputs = ort_session.run(None, ort_inputs)
                 outputs = model(inputs)
     
-        #print(f'estimated count {torch.sum(outputs).item()} cells')
+        #logger.debug(f'estimated count {torch.sum(outputs).item()} cells')
     
         vis_img = outputs[0].detach().cpu().numpy()
         #vis_img = outputs[0]
@@ -237,8 +253,8 @@ def forward_detection(file_path, wsi_object, patch_size, model_path, output_yolo
 
 
     if output_yolo_annotation:
-        print('finished output yolo annotation.')
-        print('exit.')
+        logger.debug('finished output yolo annotation.')
+        logger.debug('exit.')
         exit()
 
     # save nuclei locations as dataset
@@ -304,14 +320,17 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
 
     n_done = 0
     with open_hdf5_file(file_path, mode='a') as f:
+        patch_level_detection = f['detection'].attrs.get('patch_level')
+        patch_level_segmentation = f['segmentation'].attrs.get('patch_level')
+        patch_size_seg = f['segmentation'].attrs.get('patch_size')
         for con in f['/segmentation']:
             if dset_name in f['/segmentation'][con].keys():
                 n_done += f['/segmentation'][con][dset_name][:].shape[0]
 
-        print(f"seg total: {total}")
-        print(f"seg n_done: {n_done}")
+        logger.debug(f"seg total: {total}")
+        logger.debug(f"seg n_done: {n_done}")
         if total == n_done: # if all done, skip.
-            print('All segmentaiton patch is already done. skip.')
+            logger.debug('All segmentaiton patch is already done. skip.')
             f.close()
             return file_path
         else: # else, reset
@@ -335,10 +354,11 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
         save_dir = None
 
     buf = {}
+    buf_patch_contains_cancer_flags = {}
     for patch_id, (patch, coord, grp_name_parent) in enumerate(dataloader):
         if verbose > 0:
             if patch_id % ten_percent_chunk == 0:
-                print('progress: {}/{} forward finished'.format(patch_id, total))
+                logger.debug('progress: {}/{} forward finished'.format(patch_id, total))
 
 #        # 既に結果があるcontourのパッチは飛ばす(->途中でforwardを止めた場合でもcontourに対して一つでも結果があるとスキップしてしまう。その場合、.h5を削除してから再実行する必要がある)
 #        with open_hdf5_file(file_path, mode='r') as f:
@@ -403,6 +423,28 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
                 buf.setdefault(grp_name_parent[0], [])
             buf[grp_name_parent[0]].append(vis_map)
 
+            # TODO
+            # save detect patch coords only containing cancer(=class0) region for fast processing
+            grp_name_detection = grp_name_parent[0].replace("segmentation", "detection")
+            if grp_name_detection not in buf_patch_contains_cancer_flags.keys():
+                buf_patch_contains_cancer_flags.setdefault(grp_name_detection, [])
+            ratio = 2**(patch_level_segmentation - patch_level_detection)
+            if ratio == 1:
+                flag=int(np.count_nonzero(vis_map==CANCER_CLASS_IDX) / vis_map.size > 0.005) # regard ROI which contains cancer region only when cancer area 0.5%>.
+                buf_patch_contains_cancer_flags[grp_name_detection].append(flag)
+            if ratio >= 2:
+                #patch_downsample_seg = int(self.level_downsamples[patch_level_segmentation][0])
+                #ref_patch_size_seg = patch_size_seg*patch_downsample_seg
+                #increase_step_size = int(ref_patch_size_seg / ratio)
+                increase_step_size = int(vis_map.shape[0] // ratio)
+
+                for i_add_x in range(ratio):
+                    for i_add_y in range(ratio):
+                        #add_coord = [coord+increase_step_size*i_add_y, coord+increase_step_size*i_add_x]
+                        flag=int(np.count_nonzero(vis_map[i_add_y*increase_step_size:(i_add_y+1)*increase_step_size,
+                                                          i_add_x*increase_step_size:(i_add_x+1)*increase_step_size]==CANCER_CLASS_IDX) / vis_map.size > 0.005) # regard ROI which contains cancer region only when cancer area 0.5%>.
+                        buf_patch_contains_cancer_flags[grp_name_detection].append(flag)
+
             # save image
             if save_dir:
                 PALETTE = conf.palette
@@ -438,6 +480,13 @@ def forward_segmentation(file_path, wsi_object, patch_size, model_path): # forwa
         for k, v in buf.items():
             with open_hdf5_file(file_path, mode='a') as f:
                 create_hdf5_dataset(f[k], dset_name=dset_name, data=np.array(v).astype(np.uint8), append=True) # contour毎にdataset作成
+                f.flush()
+                f.close()
+
+    if len(buf_patch_contains_cancer_flags) > 0:
+        for k, v in buf_patch_contains_cancer_flags.items():
+            with open_hdf5_file(file_path, mode='a') as f:
+                create_hdf5_dataset(f[k], dset_name="contains_cancer_flags", data=np.array(v).astype(np.uint8), append=True) # contour毎にdataset作成
                 f.flush()
                 f.close()
 
@@ -501,12 +550,12 @@ def get_centroids(img, liklihoodmap, tau=-1, org_img=None, name=None, save_dir=N
         center.append(np.array([cX, cY]))
     center = np.array(center).astype(np.int32)
     if len(center) == 0:
-        print("count zero!!")
-        print(f'ncenters: {len(center)}')
+        logger.debug("count zero!!")
+        logger.debug(f'ncenters: {len(center)}')
         centroids_wrt_orig = np.array([[-1, -1]]).astype(np.int32)
     else:
         centroids_wrt_orig = center[:,[1,0]]
-        print(f'ncenters: {len(center)}')
+        logger.debug(f'ncenters: {len(center)}')
 
     if save_dir:
         # Paint a cross at the estimated centroids
@@ -553,7 +602,7 @@ def detect_tc_positive_nuclei(file_path, wsi_object, intensity_thres=175, area_t
                     count+=1
                 else:                                                   # modified 
                     f['/detection'].attrs.modify(attr_name, thres)
-                    print(f"update attr {attr_name} to : {thres}")
+                    logger.debug(f"update attr {attr_name} to : {thres}")
                     delete_cache = True
      
         if count == len(attr_dict.keys()): # 閾値が一つも変更されていない
@@ -566,7 +615,7 @@ def detect_tc_positive_nuclei(file_path, wsi_object, intensity_thres=175, area_t
                     del f['/detection'][con]['detection_dab_intensity']
                     del f['/detection'][con]['detection_tc_positive_indices']
  
-        print(f"skip flag   {skip_flag}")
+        logger.debug(f"skip flag   {skip_flag}")
     
     
         dataset = Whole_Slide_Bag_FP(file_path, wsi_object.getOpenSlide(), 
@@ -596,8 +645,10 @@ def detect_tc_positive_nuclei(file_path, wsi_object, intensity_thres=175, area_t
     for patch_id, (data) in enumerate(dataloader):
         if data:
             patch, coord, grp_name_parent, detection_loc = data
-            buf.append([patch, coord, grp_name_parent, detection_loc])
-            if len(buf) == 200: # 200 patch毎に処理
+            buf.append([patch.to('cpu').numpy().squeeze(0).transpose(1,2,0),
+                        coord[0].detach().cpu().numpy(), grp_name_parent, detection_loc.squeeze(0).numpy()])
+
+            if len(buf) == 200: # 200patch毎に処理
                 flush_buffer(buf, save_dir, slide_id, radius, area_thres, intensity_thres, file_path, num_worker=num_worker)
                 #del buf[:]
                 buf.clear()
@@ -614,14 +665,14 @@ def detect_tc_positive_nuclei(file_path, wsi_object, intensity_thres=175, area_t
 def flush_buffer(buf, save_dir, slide_id, radius, area_thres, intensity_thres, file_path, num_worker=8, verbose=True):
     args = [(patch, coord, grp_name_parent, detection_loc, save_dir, slide_id, radius, area_thres, intensity_thres) for patch, coord, grp_name_parent, detection_loc in buf]
     total = len(args)
-    print(f'start TC(+)count workers...num patch {total}')
+    logger.debug(f'start TC(+)count workers...num patch {total}')
     pool = Pool(num_worker)
     results = pool.map(worker, args)
     if verbose:
         ten_percent_chunk = math.ceil(total * 0.1)
         for i, result in enumerate(results):
             if i % ten_percent_chunk == 0:
-                print('progress: {}/{} TC(+)count finished'.format(i, total))
+                logger.debug('progress: {}/{} TC(+)count finished'.format(i, total))
     pool.close()
     pool.join()
    
@@ -649,18 +700,18 @@ def flush_buffer(buf, save_dir, slide_id, radius, area_thres, intensity_thres, f
 
 
 def worker(args):
-    patch, coord, grp_name_parent, detection_loc, save_dir, slide_id, radius, area_thres, intensity_thres = args
+    img, coord, grp_name_parent, detection_locs, save_dir, slide_id, radius, area_thres, intensity_thres = args
     # 核の検出数が0だったパッチは処理しない
-    detection_locs = detection_loc.squeeze(0).numpy()
     if (len(detection_locs)==1) and (np.all(detection_locs[0] == np.int32(-1))): # 核の数が0だった場合、np.array([-1, -1], dtype=np.int32)が入っている
-        img = patch.to('cpu').numpy().squeeze(0).transpose(1,2,0)
-
         return (grp_name_parent[0], np.zeros((img.shape[:2])).astype(np.uint8), np.array([]))
+        #return (grp_name_parent[0], np.zeros((img.shape[:2])).astype(np.uint8), np.array([i for i in range(np.random.randint(1,3))])) # not use
 
     else:
-        coord = coord[0].detach().cpu().numpy()
         with torch.set_grad_enabled(False):
-            img = patch.to('cpu').numpy().squeeze(0).transpose(1,2,0)
+#            dab, img_draw_dab = my_func.my_func1(img)
+#            DAB = np.asarray(dab)
+#            img_draw_DAB = np.asarray(img_draw_dab)
+#            detection_tc_positive_indices, contours_positive, contours_negative = my_func.my_func2(DAB, coord,  detection_locs, str(save_dir), slide_id, radius, area_thres, intensity_thres)
             img = (img - np.min(img)) / np.ptp(img)
             img = (img*255).astype(np.uint8)
             #img_draw_volonoi = img.copy()

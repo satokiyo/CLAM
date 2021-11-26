@@ -16,6 +16,9 @@ import torch.nn.functional as F
 import math
 from itertools import islice
 import collections
+from logging import getLogger
+
+logger = getLogger(f'pdl1_module.{__name__}')
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class SubsetSequentialSampler(Sampler):
@@ -82,7 +85,7 @@ def get_optim(model, args):
 def print_network(net):
 	num_params = 0
 	num_params_train = 0
-	print(net)
+	logger.debug(net)
 	
 	for param in net.parameters():
 		n = param.numel()
@@ -90,8 +93,8 @@ def print_network(net):
 		if param.requires_grad:
 			num_params_train += n
 	
-	print('Total number of parameters: %d' % num_params)
-	print('Total number of trainable parameters: %d' % num_params_train)
+	logger.debug('Total number of parameters: {d}'.format(num_params))
+	logger.debug('Total number of trainable parameters: {d}'.format(num_params_train))
 
 
 def generate_split(cls_ids, val_num, test_num, samples, n_splits = 5,
@@ -195,7 +198,7 @@ def threshold(array, tau):
         tau, mask = cv2.threshold(array_scaled,
                                   0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         tau = minn + (tau/255)*(maxx - minn)
-        # print(f'Otsu selected tau={tau_otsu}')
+        # logger.debug(f'Otsu selected tau={tau_otsu}')
     elif tau == -2:
         array_flat = array.flatten()
         ((a1, b1), (a2, b2)), (pi1, pi2), niter = bmm.estimate(array_flat, list(range(2)))

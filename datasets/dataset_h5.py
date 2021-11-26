@@ -17,6 +17,9 @@ import h5py
 from utils.file_utils import open_hdf5_file
 
 from random import randrange
+from logging import getLogger
+
+logger = getLogger(f'pdl1_module.{__name__}')
 
 def eval_transforms(pretrained=False):
     if pretrained:
@@ -75,12 +78,12 @@ class Whole_Slide_Bag(Dataset):
         hdf5_file = h5py.File(self.file_path, "r")
         dset = hdf5_file['imgs']
         for name, value in dset.attrs.items():
-            print(name, value)
+            logger.debug(f'{name} {value}')
 
-        print('pretrained:', self.pretrained)
-        print('transformations:', self.roi_transforms)
+        logger.debug(f'pretrained: {self.pretrained}')
+        logger.debug(f'transformations: {self.roi_transforms}')
         if self.target_patch_size is not None:
-            print('target_size: ', self.target_patch_size)
+            logger.debug('target_size: {self.target_patch_size}')
 
     def __getitem__(self, idx):
         with h5py.File(self.file_path,'r') as hdf5_file:
@@ -104,6 +107,7 @@ class Whole_Slide_Bag_FP(Dataset):
         target=None,
         detection_loc=False,
         skip_flag=False,
+        contains_cancer_flag=False,
         ):
         """
         Args:
@@ -115,6 +119,7 @@ class Whole_Slide_Bag_FP(Dataset):
             target (str): detection or segmentation
             detection_loc (bool): Return detection_loc dataset additionally. detection_loc dataset must exists. i.e. detection forward must be completed.
             skip_flag (bool): Whether thresholds have been changed or not. If True(=all unchanged), skip
+            contains_cancer_flag (bool): Return flag which indicates whether the patch contains cancer region or not. If True, return flag.
         Returns:
 
         """
@@ -150,8 +155,8 @@ class Whole_Slide_Bag_FP(Dataset):
                 '''
                 #if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'coord'):
                 if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'coords_patches'):
-                    #print(obj.name)
-                    #print(obj.parent.name)
+                    #logger.debug(obj.name)
+                    #logger.debug(obj.parent.name)
                     #coords_patches.append((obj.parent.name, obj[:]))
                     coords_patches.extend(obj[:])
                     names_parent_patches.extend(obj.parent.name for _ in range(obj[:].shape[0]))
@@ -172,14 +177,14 @@ class Whole_Slide_Bag_FP(Dataset):
                     /target/contourxx/detection_loc_y
                     '''
                     if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'detection_loc_x'):
-                        #print(obj.name)
-                        #print(obj.parent.name)
+                        #logger.debug(obj.name)
+                        #logger.debug(obj.parent.name)
                         #coords_detection_loc.append((obj.parent.name, obj[:].tolist()))
                         coords_detection_loc_x.extend(obj[:].tolist())
                         names_detection_loc_patches.extend(obj.parent.name for _ in range(obj[:].shape[0]))
                     if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'detection_loc_y'):
-                        #print(obj.name)
-                        #print(obj.parent.name)
+                        #logger.debug(obj.name)
+                        #logger.debug(obj.parent.name)
                         #coords_detection_loc.append((obj.parent.name, obj[:].tolist()))
                         coords_detection_loc_y.extend(obj[:].tolist())
  
@@ -191,6 +196,24 @@ class Whole_Slide_Bag_FP(Dataset):
                 self.detection_loc_x_patches = None
                 self.detection_loc_y_patches = None
                 self.names_detection_loc_patches = None
+
+            if contains_cancer_flag:
+                contains_cancer_flags = []
+                def get_dataset_contains_cancer_flag(name, obj):
+                    '''
+                    核検出座標の読み込み。以下の階層にdatasetがある。
+                    /target/contourxx/contains_cancer_flags
+                    '''
+                    if isinstance(obj, h5py.Dataset) and (name.split("/")[-1] == 'contains_cancer_flags'):
+                        #logger.debug(obj.name)
+                        #logger.debug(obj.parent.name)
+                        #coords_detection_loc.append((obj.parent.name, obj[:].tolist()))
+                        contains_cancer_flags.extend(obj[:].tolist())
+                dset.visititems(get_dataset_contains_cancer_flag)
+                self.contains_cancer_flags = contains_cancer_flags
+            else:
+                self.contains_cancer_flags = None
+
             f.flush()
             f.close()
 
@@ -204,12 +227,12 @@ class Whole_Slide_Bag_FP(Dataset):
         hdf5_file = open_hdf5_file(self.file_path, mode="r")
         dset = hdf5_file[f'/{self.target}']
         for name, value in dset.attrs.items():
-            print(name, value)
+            logger.debug(f'{name} {value}')
 
-        print('\nfeature extraction settings')
-        print('target patch size: ', self.target_patch_size)
-        print('pretrained: ', self.pretrained)
-        print('transformations: ', self.roi_transforms)
+        logger.debug('\nfeature extraction settings')
+        logger.debug(f'target patch size: {self.target_patch_size}')
+        logger.debug(f'pretrained: {self.pretrained}')
+        logger.debug(f'transformations: {self.roi_transforms}')
         hdf5_file.close()
 
     def __getitem__(self, idx):
@@ -241,6 +264,10 @@ class Whole_Slide_Bag_FP(Dataset):
         if self.target_patch_size is not None:
             img = img.resize(self.target_patch_size)
         img = self.roi_transforms(img)#.unsqueeze(0)
+
+        if self.contains_cancer_flags:
+            flag = self.contains_cancer_flags[idx]
+            return img, coord, grp_name_parent, flag
  
         return img, coord, grp_name_parent
 

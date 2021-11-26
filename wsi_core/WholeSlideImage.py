@@ -21,8 +21,12 @@ from pathlib import Path
 from utils.file_utils import create_hdf5_group, create_hdf5_dataset, create_hdf5_attrs, open_hdf5_file
 import re
 import gc
+from numba import jit, uint8, float64, boolean
 
 import pdb
+from logging import getLogger
+
+logger = getLogger(f'pdl1_module.{__name__}')
 
 class WholeSlideImage(object):
     def __init__(self, path):
@@ -99,13 +103,13 @@ class WholeSlideImage(object):
         def micrometer2pix_hamahoto( point , npp , offset , size_mag0 ):
             
             if(len(point ) != 2):
-               print("micrometer2pix_hamahoto : input error")
+               logger.debug("micrometer2pix_hamahoto : input error")
                exit()
             if(len(npp   ) != 2):
-               print("micrometer2pix_hamahoto : input error")
+               logger.debug("micrometer2pix_hamahoto : input error")
                exit()
             if(len(offset) != 2):
-               print("micrometer2pix_hamahoto : input error")
+               logger.debug("micrometer2pix_hamahoto : input error")
                exit()
             
             x_nanometer  = point[0]
@@ -153,10 +157,10 @@ class WholeSlideImage(object):
             anno_color_code = child.find("annotation").attrib["color"]
             #annotation      = ColorCode2annotation(anno_color_code)
             annotation      = hex_to_rgb(anno_color_code)
-            print(anno_color_code)
+            logger.debug(anno_color_code)
         
             title = child.find("title").text
-            #print(title)
+            #logger.debug(title)
         
             xlist_pix = []
             ylist_pix = []
@@ -264,7 +268,7 @@ class WholeSlideImage(object):
             thres, _ = cv2.threshold(img_med, 0, sthresh_up, cv2.THRESH_BINARY+cv2.THRESH_OTSU) 
             img_bin = np.zeros((img_gray.shape), dtype=np.uint8)
             img_bin[img_med >= thres] = 255
-            print(f"th_otsu_sat : {thres}")
+            logger.debug(f"th_otsu_sat : {thres}")
             self.sat_thres = thres
         else:
             _, img_bin = cv2.threshold(img_med, sthresh, sthresh_up, cv2.THRESH_BINARY)
@@ -277,7 +281,7 @@ class WholeSlideImage(object):
         scale = self.level_downsamples[seg_level]
         scaled_ref_patch_area = int(ref_patch_size**2 / (scale[0] * scale[1]))
        
-        print(f"vendor : {self.vendor}")
+        logger.debug(f"vendor : {self.vendor}")
         if self.vendor == 'hamamatsu':
             xml_path = self.path + '.ndpa'
         elif self.vendor == 'aperio':
@@ -378,8 +382,8 @@ class WholeSlideImage(object):
             top_left = (0,0)
             region_size = self.level_dim[vis_level]
  
-        img = np.array(self.wsi.read_region(top_left, vis_level, region_size).convert("RGB"))
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        img = np.array(self.wsi.read_region(top_left, vis_level, region_size))
+        img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA)
         
         if not view_slide_only:
             offset = tuple(-(np.array(top_left) * scale).astype(int))
@@ -421,7 +425,7 @@ class WholeSlideImage(object):
         contours = self.contours_tissue
         contour_holes = self.holes_tissue
 
-        print("Creating patches for: ", self.name, "...",)
+        logger.debug(f"Creating patches for: {self.name} ...")
         elapsed = time.time()
         for idx, cont in enumerate(contours):
             patch_gen = self._getPatchGenerator(cont, idx, patch_level, save_path, patch_size, step_size, **kwargs)
@@ -446,15 +450,15 @@ class WholeSlideImage(object):
     def _getPatchGenerator(self, cont, cont_idx, patch_level, save_path, patch_size=256, step_size=256, custom_downsample=1,
         white_black=True, white_thresh=15, black_thresh=50, contour_fn='four_pt', use_padding=True):
         start_x, start_y, w, h = cv2.boundingRect(cont) if cont is not None else (0, 0, self.level_dim[patch_level][0], self.level_dim[patch_level][1])
-        print("Bounding Box:", start_x, start_y, w, h)
-        print("Contour Area:", cv2.contourArea(cont))
+        logger.debug(f"Bounding Box: {start_x} {start_y} {w} {h}")
+        logger.debug(f"Contour Area: {cv2.contourArea(cont)}")
         
         if custom_downsample > 1:
             assert custom_downsample == 2 
             target_patch_size = patch_size
             patch_size = target_patch_size * 2
             step_size = step_size * 2
-            print("Custom Downsample: {}, Patching at {} x {}, But Final Patch Size is {} x {}".format(custom_downsample, patch_size, patch_size, 
+            logger.debug("Custom Downsample: {}, Patching at {} x {}, But Final Patch Size is {} x {}".format(custom_downsample, patch_size, patch_size, 
                 target_patch_size, target_patch_size))
 
         patch_downsample = (int(self.level_downsamples[patch_level][0]), int(self.level_downsamples[patch_level][1]))
@@ -513,7 +517,7 @@ class WholeSlideImage(object):
                 yield patch_info
 
         
-        print("patches extracted: {}".format(count))
+        logger.debug("patches extracted: {}".format(count))
 
     @staticmethod
     def isInHoles(holes, pt, patch_size):
@@ -565,18 +569,18 @@ class WholeSlideImage(object):
         /target : patch_size, patch_level, downsample, downsampled_level_dim, level_dim
 
         '''
+        assert patch_level['segmentation'] >= patch_level['detection']
         save_path_hdf5 = os.path.join(save_path, str(self.name) + '.h5')
-        print("Creating patches for: ", self.name, "...",)
+        logger.debug(f"Creating patches for: {self.name} ...")
         n_contours = len(self.contours_tissue)
-        print("Total number of contours to process: ", n_contours)
+        logger.debug(f"Total number of contours to process: {n_contours}")
         fp_chunk_size = math.ceil(n_contours * 0.05)
 
         # group作成
         with open_hdf5_file(save_path_hdf5, mode='a') as f:
             create_hdf5_attrs(f, name='name', data=self.name) # create attrs at /
 
-            targets = ['detection', 'segmentation']
-            for target in targets:
+            for target in ['segmentation', 'detection']:
                 if target in f.keys():
                     grp = f[target]
                 else:
@@ -638,7 +642,7 @@ class WholeSlideImage(object):
                 add_idx = 0
                 for idx_cont, cont in enumerate(self.contours_tissue): # contour coords at level0
                     if (idx_cont + 1) % fp_chunk_size == fp_chunk_size:
-                        print('Processing contour {}/{}'.format(idx_cont, n_contours))
+                        logger.debug('Processing contour {}/{}'.format(idx_cont, n_contours))
 
                     if idx_cont in to_skip_list:
                         continue
@@ -647,26 +651,42 @@ class WholeSlideImage(object):
                     grp_cont = create_hdf5_group(grp, f'contour{int(cont_idx_offset) + add_idx}') # /target/contourxx contourの番号は追加順に増やしていく
                     create_hdf5_dataset(grp_cont, 'coords_contour', data=cont) # dataset at /target/contourxx/coords_contour
 
-                    # パッチの取得
-                    asset_dict = self.process_contour(cont, self.holes_tissue[idx_cont], patch_level[target], save_path, patch_size, step_size, **kwargs)
+                    if target == "segmentation":
+                        # パッチの取得
+                        asset_dict = self.process_contour(cont, self.holes_tissue[idx_cont], patch_level[target], save_path, patch_size, step_size, **kwargs)
+                        # save 
+                        if len(asset_dict) > 0:
+                            # save assets per patch
+                            create_hdf5_dataset(grp_cont, 'coords_patches', data=asset_dict['coords']) # dataset at /target/contourxx/coords_patches
+                        else: # no patches for this cont
+                            # TODO
+                            pass
+                    elif target == "detection":
+                        ratio = 2**(patch_level['segmentation'] - patch_level['detection'])
+                        seg_patch_coords = f['segmentation'][f'contour{int(cont_idx_offset) + add_idx}']['coords_patches'][:]
+                        if ratio == 1:
+                            detect_patch_coords = seg_patch_coords
+                        if ratio >= 2:
+                            patch_downsample_seg = int(self.level_downsamples[patch_level["segmentation"]][0])
+                            ref_patch_size_seg = patch_size*patch_downsample_seg
+                            increase_step_size = int(ref_patch_size_seg // ratio)
+                            detect_patch_coords = []
+                            for coord in seg_patch_coords:
+                                for i_add_x in range(ratio):
+                                    for i_add_y in range(ratio):
+                                        add_coord = [coord[0]+increase_step_size*i_add_y, coord[1]+increase_step_size*i_add_x]
+                                        detect_patch_coords.append(add_coord)
 
-                    # save 
-                    if len(asset_dict) > 0:
-                        # save assets per patch
-                        #for idx_patch, coord in enumerate(asset_dict['coords']):
-                        #    grp_patch = create_hdf5_group(grp_cont, f'patch{idx_patch}') # /target/contourxx/patchxx
-                        #    create_hdf5_dataset(grp_patch, 'coord', data=coord) # dataset at /target/contourxx/patchxx/coord
-                        create_hdf5_dataset(grp_cont, 'coords_patches', data=asset_dict['coords']) # dataset at /target/contourxx/coords_patches
-                    else: # no patches for this cont
-                        # TODO
+                        create_hdf5_dataset(grp_cont, 'coords_patches', data=np.array(detect_patch_coords)) # dataset at /target/contourxx/coords_patches
+                    else:
                         pass
     
             debug=False
             if debug:
                 def print_dataset(name, obj):
                     if isinstance(obj, h5py.Dataset):
-                        print(name)
-                        # print('\t',obj)
+                        logger.debug(name)
+                        # logger.debug('\t',obj)
                 f.visititems(print_dataset)
 
             f.flush()
@@ -695,8 +715,8 @@ class WholeSlideImage(object):
             stop_y = min(start_y+h, img_h-ref_patch_size[1]+1) # coord at level0
             stop_x = min(start_x+w, img_w-ref_patch_size[0]+1) # coord at level0
         
-        print("Bounding Box:", start_x, start_y, w, h)
-        print("Contour Area:", cv2.contourArea(cont))
+        logger.debug(f"Bounding Box:{start_x} {start_y} {w} {h}")
+        logger.debug(f"Contour Area:{cv2.contourArea(cont)}")
 
         if bot_right is not None:
             stop_y = min(bot_right[1], stop_y)
@@ -708,19 +728,28 @@ class WholeSlideImage(object):
         if bot_right is not None or top_left is not None:
             w, h = stop_x - start_x, stop_y - start_y
             if w <= 0 or h <= 0:
-                print("Contour is not in specified ROI, skip")
+                logger.debug("Contour is not in specified ROI, skip")
                 return {}, {}
             else:
-                print("Adjusted Bounding Box:", start_x, start_y, w, h)
+                logger.debug(f"Adjusted Bounding Box: {start_x} {start_y} {w} {h}")
 
         if patch_size > step_size: # overlap tile
             offset = int(patch_size - step_size) // 2
             ref_offset_x = offset*patch_downsample[0]
             ref_offset_y = offset*patch_downsample[1]
             start_x = start_x-ref_offset_x
+            if start_x < 0:
+                stop_x = stop_x+ref_offset_x-start_x
+                start_x = 0
+            else:
+                stop_x = stop_x+ref_offset_x
+
             start_y = start_y-ref_offset_y
-            stop_y = stop_y+ref_offset_y
-            stop_x = stop_x+ref_offset_x
+            if start_y < 0:
+                stop_y = stop_y+ref_offset_y-start_y
+                start_y = 0
+            else:
+                stop_y = stop_y+ref_offset_y
 
         if isinstance(contour_fn, str):
             if contour_fn == 'four_pt':
@@ -762,13 +791,13 @@ class WholeSlideImage(object):
         results = np.array([result for result in results if result is not None])
 
         args = [(self.path, coord, ref_patch_size, self.sat_thres, 0.05) for coord in results]
-        pool = mp.Pool(8)
+        pool = mp.Pool(16)
         results = pool.map(isTissueArea, args) # 組織領域が5%以下のROIは処理しない
         pool.close()
         pool.join()
         results = np.array([result for result in results if result is not None])
-
-        print('Extracted {} coordinates'.format(len(results)))
+        results = np.unique(results, axis=0) # remove duplicated coordinate
+        logger.debug('Extracted {} coordinates'.format(len(results)))
 
         if len(results)>1:
             asset_dict = {'coords' : results}
@@ -855,10 +884,10 @@ class WholeSlideImage(object):
         patch_size  = np.ceil(np.array(patch_size) * np.array(scale)).astype(int)
         coords = np.ceil(coords * np.array(scale)).astype(int)
         
-        print('\ncreating heatmap for: ')
-        print('top_left: ', top_left, 'bot_right: ', bot_right)
-        print('w: {}, h: {}'.format(w, h))
-        print('scaled patch size: ', patch_size)
+        logger.debug('\ncreating heatmap for: ')
+        logger.debug(f'top_left: {top_left} bot_right: {bot_right}')
+        logger.debug('w: {}, h: {}'.format(w, h))
+        logger.debug(f'scaled patch size: {patch_size}')
 
         ###### normalize filtered scores ######
         if convert_to_percentiles:
@@ -889,8 +918,8 @@ class WholeSlideImage(object):
             counter[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0]] += 1
 
         if binarize:
-            print('\nbinarized tiles based on cutoff of {}'.format(threshold))
-            print('identified {}/{} patches as positive'.format(count, len(coords)))
+            logger.debug('\nbinarized tiles based on cutoff of {}'.format(threshold))
+            logger.debug('identified {}/{} patches as positive'.format(count, len(coords)))
         
         # fetch attended region and average accumulated attention
         zero_mask = counter == 0
@@ -916,8 +945,8 @@ class WholeSlideImage(object):
 
         #return Image.fromarray(img) #raw image
 
-        print('\ncomputing heatmap image')
-        print('total of {} patches'.format(len(coords)))
+        logger.debug('\ncomputing heatmap image')
+        logger.debug('total of {} patches'.format(len(coords)))
         twenty_percent_chunk = max(1, int(len(coords) * 0.2))
 
         if isinstance(cmap, str):
@@ -925,7 +954,7 @@ class WholeSlideImage(object):
         
         for idx in range(len(coords)):
             if (idx + 1) % twenty_percent_chunk == 0:
-                print('progress: {}/{}'.format(idx, len(coords)))
+                logger.debug('progress: {}/{}'.format(idx, len(coords)))
             
             score = scores[idx]
             coord = coords[idx]
@@ -953,7 +982,7 @@ class WholeSlideImage(object):
                 img[coord[1]:coord[1]+patch_size[1], coord[0]:coord[0]+patch_size[0]] = img_block.copy()
         
         #return Image.fromarray(img) #overlay
-        print('Done')
+        logger.debug('Done')
         del overlay
 
         if blur:
@@ -976,18 +1005,18 @@ class WholeSlideImage(object):
 
     
     def block_blending(self, img, vis_level, top_left, bot_right, alpha=0.5, blank_canvas=False, block_size=1024):
-        print('\ncomputing blend')
+        logger.debug('\ncomputing blend')
         downsample = self.level_downsamples[vis_level]
         w = img.shape[1]
         h = img.shape[0]
         block_size_x = min(block_size, w)
         block_size_y = min(block_size, h)
-        print('using block size: {} x {}'.format(block_size_x, block_size_y))
+        logger.debug('using block size: {} x {}'.format(block_size_x, block_size_y))
 
         shift = top_left # amount shifted w.r.t. (0,0)
         for x_start in range(top_left[0], bot_right[0], block_size_x * int(downsample[0])):
             for y_start in range(top_left[1], bot_right[1], block_size_y * int(downsample[1])):
-                #print(x_start, y_start)
+                #logger.debug(x_start, y_start)
 
                 # 1. convert wsi coordinates to image coordinates via shift and scale
                 x_start_img = int((x_start - shift[0]) / int(downsample[0]))
@@ -999,7 +1028,7 @@ class WholeSlideImage(object):
 
                 if y_end_img == y_start_img or x_end_img == x_start_img:
                     continue
-                #print('start_coord: {} end_coord: {}'.format((x_start_img, y_start_img), (x_end_img, y_end_img)))
+                #logger.debug('start_coord: {} end_coord: {}'.format((x_start_img, y_start_img), (x_end_img, y_end_img)))
                 
                 # 3. fetch blend block and size
                 blend_block = img[y_start_img:y_end_img, x_start_img:x_end_img] 
@@ -1018,7 +1047,7 @@ class WholeSlideImage(object):
         return img
 
     def get_seg_mask(self, region_size, scale, use_holes=False, offset=(0,0)):
-        print('\ncomputing foreground tissue mask')
+        logger.debug('\ncomputing foreground tissue mask')
         tissue_mask = np.full(np.flip(region_size), 0).astype(np.uint8)
         contours_tissue = self.scaleContourDim(self.contours_tissue, scale)
         offset = tuple((np.array(offset) * np.array(scale) * -1).astype(np.int32))
@@ -1033,30 +1062,28 @@ class WholeSlideImage(object):
             # contours_holes = self._scaleContourDim(self.holes_tissue, scale, holes=True, area_thresh=area_thresh)
                 
         tissue_mask = tissue_mask.astype(bool)
-        print('detected {}/{} of region as tissue'.format(tissue_mask.sum(), tissue_mask.size))
+        logger.debug('detected {}/{} of region as tissue'.format(tissue_mask.sum(), tissue_mask.size))
         return tissue_mask
 
 
 def isTissueArea(args):
     path, coord, ref_patch_size, sat_thres, area_thres = args
     wsi = openslide.open_slide(path) # Open Whole-Slide Image
-    img = np.array(wsi.read_region(coord, 0, ref_patch_size).convert("RGB"))
+    img = np.array(wsi.read_region(coord, 0, ref_patch_size))
     img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA)
-#       img_gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
     img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)  # Convert to HSV space
     img_med = img_hsv[:,:,1]
-#       img_bin = np.zeros((img_gray.shape), dtype=np.uint8)
     img_bin = np.zeros((img_med.shape), dtype=np.uint8)
     img_bin[img_med >= sat_thres] = 255
     h,w = img_bin.shape[:2]
     tissue = np.count_nonzero(img_bin==255)
     all_pixel = h*w
     del img, img_hsv, img_med, img_bin, wsi
+
     if (tissue/all_pixel) > area_thres: # 組織が5%以上あったROIは処理する
-        print('tissue area over area_thres')
+        logger.debug('tissue area over area_thres')
         return coord
     else:
-        print('tissue area under area_thres')
+        logger.debug('tissue area under area_thres')
         return None
-
 

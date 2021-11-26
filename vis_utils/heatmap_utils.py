@@ -26,7 +26,7 @@ def score2percentile(score, ref):
 def drawHeatmap(scores, coords, slide_path=None, wsi_object=None, vis_level = -1, **kwargs):
     if wsi_object is None:
         wsi_object = WholeSlideImage(slide_path)
-        print(wsi_object.name)
+        logger.debug(wsi_object.name)
     
     wsi = wsi_object.getOpenSlide()
     if vis_level < 0:
@@ -53,9 +53,9 @@ def compute_from_patches(wsi_object, clam_pred=None, model=None, feature_extract
     
     roi_dataset = Wsi_Region(wsi_object, **wsi_kwargs)
     roi_loader = get_simple_loader(roi_dataset, batch_size=batch_size, num_workers=8)
-    print('total number of patches to process: ', len(roi_dataset))
+    logger.debug('total number of patches to process: ', len(roi_dataset))
     num_batches = len(roi_loader)
-    print('number of batches: ', len(roi_loader))
+    logger.debug('number of batches: ', len(roi_loader))
     mode = "w"
     for idx, (roi, coords) in enumerate(roi_loader):
         roi = roi.to(device)
@@ -80,7 +80,7 @@ def compute_from_patches(wsi_object, clam_pred=None, model=None, feature_extract
                 save_path = save_hdf5(attn_save_path, asset_dict, mode=mode)
     
         if idx % math.ceil(num_batches * 0.05) == 0:
-            print('procssed {} / {}'.format(idx, num_batches))
+            logger.debug('procssed {} / {}'.format(idx, num_batches))
 
         if feat_save_path is not None:
             asset_dict = {'features': features.cpu().numpy(), 'coords': coords}
